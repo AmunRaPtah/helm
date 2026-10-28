@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""helm-runner <id>
+
+Runs inside tmux session hx-<id>. Owns the harness process(es), normalizes
+output into Event records appended to events.jsonl, reads input from the
+session's inbox FIFO, updates meta.json, and prints a readable transcript
+to the pane.
+"""
+import json
+import os
+import queue
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+
+from helmd import config, sessionio, adapters  # noqa: E402
+
+C_RESET = "\033[0m"
+C_USER = "\033[36m"
+C_ASSIST = "\033[32m"
+C_TOOL = "\033[33m"
+C_ERR = "\033[31m"
+C_DIM = "\033[90m"
+
+
+def color_for(ev_type):
+    return {"user": C_USER, "assistant": C_ASSIST, "assistant_delta": C_ASSIST,
+            "tool_call": C_TOOL, "tool_result": C_TOOL, "error": C_ERR}.get(ev_type, C_DIM)
+
+
+def transcript_print(ev):
+    t = ev.get("type")
+    c = color_for(t)
+    if t == "user":
+        print(f"{c}> {ev.get('text','')}{C_RESET}")
+    elif t == "assistant":
+        print(f"{c}{ev.get('text','')}{C_RESET}")
+    elif t == "assistant_delta":
+        sys.stdout.write(f"{c}{ev.get('text','')}{C_RESET}")
+        sys.stdout.flush()
+        return
+    elif t == "tool_call":
+        print(f"{c}[tool] {ev.get('name')} {ev.get('input','')[:200]}{C_RESET}")
+    elif t == "tool_result":
+        print(f"{c}[tool result] {ev.get('output','')[:200]}{C_RESET}")
+    elif t == "error":
+        print(f"{c}[error] {ev.get('text','')}{C_RESET}")
+    elif t == "system":
+        print(f"{c}[system] {ev.get('text','')}{C_RESET}")
+    elif t == "status":
+        print(f"{c}[status] {ev.get('state')} {ev.get('detail') or ''}{C_RESET}")
+    elif t == "usage":
+        print(f"{c}[usage] in={ev.get('input_tokens')} out={ev.get('output_tokens')} cost={ev.get('cost_usd')}{C_RESET}")
+    else:
+        print(f"{c}{ev}{C_RESET}")
+    print("", end="", flush=True)
+
+
+class Runner:
+    def __init__(self, sid):
+        self.sid = sid
+        self.meta = sessionio.read_meta(sid)
+        if not self.meta:
+            raise SystemExit(f"no such session {sid}")
+        self.inq = queue.Queue()
+        self.child = None
+        self.child_pgid = None
+        self.turn_lock = threading.Lock()
+        self.should_exit = threading.Event()
+
+    def emit(self, ev):
+        full = sessionio.append_event(self.sid, ev)
+        transcript_print(full)
+
+    def set_state(self, state, **extra):
+        sessionio.update_meta(self.sid, state=state, **extra)
+        self.meta = sessionio.read_meta(self.sid)
+
+    # ---------------- inbox ----------------
+
+    def inbox_loop(self):
+        path = str(config.inbox_path(self.sid))
+        while not self.should_exit.is_set():
+            try:
+                fd = os.open(path, os.O_RDONLY)
+            except OSError:
+                time.sleep(0.2)
+                continue
+            with os.fdopen(fd, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if obj.get("op") == "interrupt":
+                        # Handled immediately, out-of-band: the main loop
+                        # may be blocked synchronously inside a long-running
+                        # turn, so an interrupt can't wait behind it in the
+                        # queue.
+                        self.interrupt()
+                    else:
+                        self.inq.put(obj)
+
+    # ---------------- long-lived harnesses (claude/ds/cc/agy) ----------------
+
+    def start_long_lived(self):
+        if self.meta["harness"] == "agy":
+            cmd, env = adapters.agy_cmd(self.meta)
+        else:
+            cmd, env = adapters.claude_cmd(self.meta)
+        full_env = dict(os.environ)
+        full_env.update(env)
+        self.child = subprocess.Popen(
+            cmd, cwd=self.meta["cwd"], env=full_env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, preexec_fn=os.setsid)
+        self.child_pgid = os.getpgid(self.child.pid)
+        self.set_state("idle")
+        t = threading.Thread(target=self.reader_long_lived, daemon=True)
+        t.start()
+
+    def reader_long_lived(self):
+        parse = adapters.agy_parse if self.meta["harness"] == "agy" else adapters.claude_parse
+        for line in self.child.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                self.emit({"type": "system", "text": line[:500]})
+                continue
+            try:
+                events, native_id = parse(obj)
+            except Exception as e:  # never crash the runner on a parse surprise
+                self.emit({"type": "system", "text": f"[parse-error] {e}: {line[:300]}"})
+                continue
+            if native_id and not self.meta.get("native_session_id"):
+                self.set_state(self.meta["state"], native_session_id=native_id)
+            for ev in events:
+                self.emit(ev)
+                if ev["type"] in ("usage",):
+                    self.set_state("idle")
+                if ev["type"] == "status" and ev.get("state") == "running":
+                    self.set_state("running")
+        rc = self.child.wait()
+        self.set_state("exited")
+        self.emit({"type": "status", "state": "exited", "detail": f"process exited code {rc}"})
+        self.should_exit.set()
+
+    def send_long_lived(self, text, attachments):
+        if self.child is None or self.child.poll() is not None:
+            self.start_long_lived()
+        fn = adapters.agy_input_line if self.meta["harness"] == "agy" else adapters.claude_input_line
+        self.set_state("running")
+        self.child.stdin.write(fn(text, attachments))
+        self.child.stdin.flush()
+
+    # ---------------- codex (process per turn) ----------------
+
+    def send_codex(self, text, attachments):
+        cmd, env = adapters.codex_cmd(self.meta, text, attachments)
+        full_env = dict(os.environ)
+        full_env.update(env)
+        self.set_state("running")
+        self.child = subprocess.Popen(
+            cmd, env=full_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1, preexec_fn=os.setsid)
+        self.child_pgid = os.getpgid(self.child.pid)
+        for line in self.child.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                self.emit({"type": "system", "text": line[:500]})
+                continue
+            try:
+                events, native_id = adapters.codex_parse(obj)
+            except Exception as e:
+                self.emit({"type": "system", "text": f"[parse-error] {e}: {line[:300]}"})
+                continue
+            if native_id and not self.meta.get("native_session_id"):
+                self.set_state(self.meta["state"], native_session_id=native_id)
+            for ev in events:
+                self.emit(ev)
+        rc = self.child.wait()
+        if rc != 0 and not self.meta.get("native_session_id"):
+            self.emit({"type": "error", "text": f"codex exited {rc} before starting a thread"})
+        self.set_state("idle")
+        self.child = None
+
+    # ---------------- interrupt ----------------
+
+    def interrupt(self):
+        if self.child_pgid:
+            try:
+                os.killpg(self.child_pgid, signal.SIGINT)
+                self.emit({"type": "system", "text": "interrupted current turn"})
+            except ProcessLookupError:
+                pass
+
+    # ---------------- main loop ----------------
+
+    def run(self):
+        resuming = bool(self.meta.get("native_session_id"))
+        self.emit({"type": "system", "text": "runner resumed session" if resuming else "runner started"})
+        self.set_state("idle")
+        threading.Thread(target=self.inbox_loop, daemon=True).start()
+
+        long_lived = self.meta["harness"] in adapters.LONG_LIVED
+        try:
+            while not self.should_exit.is_set():
+                try:
+                    obj = self.inq.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                op = obj.get("op")
+                if op == "interrupt":
+                    self.interrupt()
+                elif op == "message":
+                    text, attachments = obj.get("text", ""), obj.get("attachments", [])
+                    self.emit({"type": "user", "text": text, "attachments": attachments})
+                    if long_lived:
+                        self.send_long_lived(text, attachments)
+                    else:
+                        self.send_codex(text, attachments)
+        except Exception as e:
+            self.emit({"type": "error", "text": f"runner crashed: {e}"})
+            self.set_state("exited")
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("usage: helm-runner <id>", file=sys.stderr)
+        sys.exit(1)
+    sid = sys.argv[1]
+    Runner(sid).run()
+
+
+if __name__ == "__main__":
+    main()

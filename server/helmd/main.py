@@ -1,0 +1,330 @@
+import asyncio
+import json
+import os
+import shutil
+import signal
+import subprocess
+import time
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, Header, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+
+from . import config, sessionio
+from .harnesses import get_harnesses
+from .idgen import new_id
+
+app = FastAPI()
+
+VALID_PERMISSIONS = {"bypass", "acceptEdits", "default", "plan"}
+VALID_HARNESSES = {h["id"] for h in get_harnesses()}
+
+
+# ---------- auth ----------
+
+def check_auth(authorization: Optional[str] = Header(None)):
+    token = config.load_token()
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "missing bearer token")
+    if authorization[7:] != token:
+        raise HTTPException(401, "bad token")
+
+
+# ---------- tmux helpers ----------
+
+def tmux_has_session(name: str) -> bool:
+    r = subprocess.run(["tmux", "has-session", "-t", name], capture_output=True)
+    return r.returncode == 0
+
+
+def tmux_kill_session(name: str) -> None:
+    subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
+
+
+def tmux_start_runner(sid: str, cwd: str) -> None:
+    name = f"hx-{sid}"
+    if tmux_has_session(name):
+        tmux_kill_session(name)
+    Path(cwd).mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", name, "-c", cwd, config.HELM_RUNNER, sid],
+        check=True,
+    )
+    subprocess.run(["tmux", "set-option", "-t", name, "remain-on-exit", "on"], capture_output=True)
+
+
+# ---------- startup ----------
+
+@app.on_event("startup")
+def on_startup():
+    config.ensure_dirs()
+    config.load_token()  # fail fast if missing
+    # Reconcile: any session claiming to be alive but with no tmux session
+    # behind it (e.g. the box rebooted) is marked exited.
+    if not config.SESSIONS_DIR.exists():
+        return
+    for d in config.SESSIONS_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        sid = d.name
+        meta = sessionio.read_meta(sid)
+        if not meta:
+            continue
+        if meta.get("state") in ("starting", "running", "idle") and not tmux_has_session(f"hx-{sid}"):
+            sessionio.update_meta(sid, state="exited")
+            sessionio.append_event(sid, {"type": "status", "state": "exited",
+                                          "detail": "helmd restart: runner/tmux not found"})
+
+
+# ---------- REST ----------
+
+@app.get("/health")
+def health():
+    return {"ok": True, "version": "1"}
+
+
+@app.get("/harnesses")
+def harnesses(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return get_harnesses()
+
+
+@app.get("/sessions")
+def list_sessions(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    out = []
+    if config.SESSIONS_DIR.exists():
+        for d in config.SESSIONS_DIR.iterdir():
+            meta = sessionio.read_meta(d.name)
+            if meta:
+                out.append(meta)
+    out.sort(key=lambda m: m.get("updated", 0), reverse=True)
+    return out
+
+
+@app.post("/sessions")
+async def create_session(request: Request, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    body = await request.json()
+    harness = body.get("harness")
+    if harness not in VALID_HARNESSES:
+        raise HTTPException(400, f"unknown harness {harness!r}")
+    permission = body.get("permission", "bypass")
+    if permission not in VALID_PERMISSIONS:
+        raise HTTPException(400, f"bad permission {permission!r}")
+    cwd = body.get("cwd") or str(Path.home())
+    sid = new_id()
+    now = time.time()
+    text = body.get("text")
+    title = (text or "").strip()[:60] or harness
+    meta = {
+        "id": sid, "title": title, "harness": harness,
+        "profile": body.get("profile"), "model": body.get("model"),
+        "cwd": cwd, "permission": permission, "state": "starting",
+        "created": now, "updated": now, "last_seq": 0,
+        "native_session_id": None, "tmux": f"hx-{sid}",
+    }
+    sdir = config.session_dir(sid)
+    sdir.mkdir(parents=True, exist_ok=True)
+    config.uploads_dir(sid).mkdir(parents=True, exist_ok=True)
+    sessionio.write_meta(sid, meta)
+    config.events_path(sid).touch()
+    os.mkfifo(str(config.inbox_path(sid)))
+    tmux_start_runner(sid, cwd)
+    if text:
+        ok = await asyncio.get_event_loop().run_in_executor(
+            None, sessionio.write_inbox, sid, {"op": "message", "text": text,
+                                                "attachments": body.get("attachments", [])})
+        if not ok:
+            sessionio.append_event(sid, {"type": "error", "text": "runner did not come up to accept first message"})
+    return sessionio.read_meta(sid)
+
+
+def _require_session(sid: str) -> dict:
+    meta = sessionio.read_meta(sid)
+    if not meta:
+        raise HTTPException(404, "no such session")
+    return meta
+
+
+@app.get("/sessions/{sid}")
+def get_session(sid: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return _require_session(sid)
+
+
+@app.patch("/sessions/{sid}")
+async def patch_session(sid: str, request: Request, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    _require_session(sid)
+    body = await request.json()
+    fields = {}
+    if "title" in body:
+        fields["title"] = body["title"]
+    return sessionio.update_meta(sid, **fields)
+
+
+@app.delete("/sessions/{sid}")
+def delete_session(sid: str, purge: int = Query(0), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    _require_session(sid)
+    tmux_kill_session(f"hx-{sid}")
+    if purge:
+        shutil.rmtree(config.session_dir(sid), ignore_errors=True)
+    return {"ok": True}
+
+
+@app.get("/sessions/{sid}/events")
+def get_events(sid: str, after: int = 0, limit: int = 500, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    _require_session(sid)
+    return sessionio.read_events(sid, after=after, limit=limit)
+
+
+@app.post("/sessions/{sid}/messages")
+async def post_message(sid: str, request: Request, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    meta = _require_session(sid)
+    if meta.get("state") == "running":
+        raise HTTPException(409, "session is running")
+    body = await request.json()
+    text = body.get("text", "")
+    attachments = body.get("attachments", [])
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, sessionio.write_inbox, sid, {"op": "message", "text": text, "attachments": attachments})
+    if not ok:
+        raise HTTPException(503, "runner not accepting input")
+    return {"ok": True}
+
+
+@app.post("/sessions/{sid}/interrupt")
+async def interrupt_session(sid: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    _require_session(sid)
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, sessionio.write_inbox, sid, {"op": "interrupt"})
+    if not ok:
+        raise HTTPException(503, "runner not accepting input")
+    return {"ok": True}
+
+
+@app.post("/sessions/{sid}/resume")
+def resume_session(sid: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    meta = _require_session(sid)
+    sessionio.update_meta(sid, state="starting")
+    tmux_start_runner(sid, meta["cwd"])
+    return sessionio.read_meta(sid)
+
+
+@app.post("/upload")
+async def upload(file: UploadFile = File(...), session_id: str = Form(...),
+                  authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    _require_session(session_id)
+    udir = config.uploads_dir(session_id)
+    udir.mkdir(parents=True, exist_ok=True)
+    name = Path(file.filename).name
+    dest = udir / name
+    data = await file.read()
+    dest.write_bytes(data)
+    return {"path": str(dest)}
+
+
+@app.get("/dirs")
+def dirs(path: str = Query(str(Path.home())), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    p = Path(path)
+    if not p.is_dir():
+        raise HTTPException(400, "not a directory")
+    entries = []
+    try:
+        for e in sorted(p.iterdir(), key=lambda x: x.name.lower()):
+            if e.is_dir():
+                entries.append({"name": e.name, "is_dir": True})
+    except PermissionError:
+        pass
+    return {"path": str(p), "entries": entries}
+
+
+@app.get("/quota")
+def quota(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    qa = shutil.which("quota-axi")
+    if not qa:
+        return {}
+    try:
+        out = subprocess.run([qa, "--json"], capture_output=True, text=True, timeout=15).stdout
+        return json.loads(out)
+    except Exception:
+        return {}
+
+
+# ---------- WebSocket ----------
+
+@app.websocket("/sessions/{sid}/stream")
+async def stream(ws: WebSocket, sid: str):
+    token = ws.headers.get("authorization")
+    if token and token.startswith("Bearer "):
+        token = token[7:]
+    else:
+        token = ws.query_params.get("token")
+    try:
+        expected = config.load_token()
+    except Exception:
+        expected = None
+    if not token or token != expected:
+        await ws.close(code=4401)
+        return
+    meta = sessionio.read_meta(sid)
+    if not meta:
+        await ws.close(code=4404)
+        return
+    await ws.accept()
+    after = int(ws.query_params.get("after", 0))
+
+    stop = asyncio.Event()
+
+    async def sender():
+        last_sent = after
+        last_ping = time.time()
+        while not stop.is_set():
+            evs = sessionio.read_events(sid, after=last_sent, limit=1000)
+            for ev in evs:
+                await ws.send_text(json.dumps(ev))
+                last_sent = ev["seq"]
+            if time.time() - last_ping >= 20:
+                await ws.send_text(json.dumps({"type": "ping"}))
+                last_ping = time.time()
+            await asyncio.sleep(0.2)
+
+    async def receiver():
+        try:
+            while True:
+                raw = await ws.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("type") == "message":
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, sessionio.write_inbox, sid,
+                        {"op": "message", "text": msg.get("text", ""),
+                         "attachments": msg.get("attachments", [])})
+                elif msg.get("type") == "interrupt":
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, sessionio.write_inbox, sid, {"op": "interrupt"})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            stop.set()
+
+    send_task = asyncio.create_task(sender())
+    recv_task = asyncio.create_task(receiver())
+    try:
+        await asyncio.wait([send_task, recv_task], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stop.set()
+        send_task.cancel()
+        recv_task.cancel()
