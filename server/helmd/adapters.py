@@ -32,6 +32,9 @@ import json
 import mimetypes
 import os
 import shutil
+from pathlib import Path
+
+from . import config
 
 CODEX_BIN = shutil.which("codex") or os.path.expanduser(
     "~/.nvm/versions/node/v24.18.0/bin/codex")
@@ -59,15 +62,25 @@ def _is_image(path):
 
 # ---------------------------------------------------------------- claude/ds/cc
 
+# Inside tmux the nvm claude binary precedes /usr/local/bin on PATH, which skips
+# the wrapper that injects the pinned OAuth token, and auth then fails.
+CLAUDE_WRAPPER = "/usr/local/bin/claude"
+
+
 def claude_cmd(meta):
-    cmd = [meta["harness"], "-p", "--input-format", "stream-json",
+    exe = meta["harness"]
+    if exe == "claude" and os.access(CLAUDE_WRAPPER, os.X_OK):
+        exe = CLAUDE_WRAPPER
+    cmd = [exe, "-p", "--input-format", "stream-json",
            "--output-format", "stream-json", "--verbose", "--include-partial-messages",
            "--permission-mode", PERMISSION_MAP_CLAUDE.get(meta["permission"], "bypassPermissions")]
     if meta.get("model"):
         cmd += ["--model", meta["model"]]
     if meta.get("native_session_id"):
         cmd += ["--resume", meta["native_session_id"]]
-    return cmd, {}
+    # claude refuses bypassPermissions as root unless IS_SANDBOX is set; don't
+    # rely on the tmux server happening to inherit it.
+    return cmd, {"IS_SANDBOX": "1"} if os.geteuid() == 0 else {}
 
 
 def claude_input_line(text, attachments):
@@ -89,6 +102,8 @@ def claude_parse(obj):
     if t == "system" and obj.get("subtype") == "init":
         native_id = obj.get("session_id")
         events.append({"type": "system", "text": f"session started (model={obj.get('model') or 'default'})"})
+        if obj.get("slash_commands"):
+            events.append({"type": "_meta", "fields": {"commands": obj["slash_commands"]}})
     elif t == "system" and obj.get("subtype", "").startswith("hook_"):
         pass  # local plugin noise, not protocol
     elif t == "stream_event":
@@ -131,7 +146,41 @@ def claude_parse(obj):
                         "cost_usd": obj.get("total_cost_usd")})
         if obj.get("is_error"):
             events.append({"type": "error", "text": obj.get("result") or "turn errored"})
+        elif isinstance(obj.get("result"), str):
+            events.append({"type": "_result_text", "text": obj["result"]})
     return events, native_id
+
+
+# ------------------------------------------------------------ slash commands
+
+# Before a claude session's first turn there is no init record yet, so fall
+# back to the list the last session of the same harness reported.
+CLAUDE_BUILTINS = ["compact", "context", "cost", "init", "review", "security-review"]
+
+
+def _commands_cache(harness):
+    return config.HELM_HOME / f"commands-{harness}.json"
+
+
+def save_commands(harness, commands):
+    try:
+        _commands_cache(harness).write_text(json.dumps(commands))
+    except OSError:
+        pass
+
+
+def known_commands(meta):
+    if meta["harness"] not in LONG_LIVED or meta["harness"] == "agy":
+        return []
+    if meta.get("commands"):
+        return meta["commands"]
+    try:
+        return json.loads(_commands_cache(meta["harness"]).read_text())
+    except (OSError, ValueError):
+        pass
+    skills = Path.home() / ".claude" / "skills"
+    names = sorted(p.name for p in skills.iterdir() if (p / "SKILL.md").exists()) if skills.is_dir() else []
+    return CLAUDE_BUILTINS + names
 
 
 # --------------------------------------------------------------------- agy

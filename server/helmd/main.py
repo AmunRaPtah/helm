@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from . import config, sessionio
+from . import adapters, config, sessionio
 from .harnesses import get_harnesses
 from .idgen import new_id
 
@@ -48,7 +48,8 @@ def tmux_start_runner(sid: str, cwd: str) -> None:
         tmux_kill_session(name)
     Path(cwd).mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["tmux", "new-session", "-d", "-s", name, "-c", cwd, config.HELM_RUNNER, sid],
+        ["tmux", "new-session", "-d", "-s", name, "-c", cwd,
+         "-e", f"HELM_HOME={config.HELM_HOME}", config.HELM_RUNNER, sid],
         check=True,
     )
     subprocess.run(["tmux", "set-option", "-t", name, "remain-on-exit", "on"], capture_output=True)
@@ -186,16 +187,47 @@ def get_events(sid: str, after: int = 0, limit: int = 500, authorization: Option
 async def post_message(sid: str, request: Request, authorization: Optional[str] = Header(None)):
     check_auth(authorization)
     meta = _require_session(sid)
-    if meta.get("state") == "running":
-        raise HTTPException(409, "session is running")
     body = await request.json()
-    text = body.get("text", "")
-    attachments = body.get("attachments", [])
     ok = await asyncio.get_event_loop().run_in_executor(
-        None, sessionio.write_inbox, sid, {"op": "message", "text": text, "attachments": attachments})
+        None, sessionio.write_inbox, sid, _message_op(body))
+    if not ok:
+        raise HTTPException(503, "runner not accepting input")
+    # Messages sent mid-turn are queued by the runner, not rejected.
+    return {"ok": True, "queued": meta.get("state") == "running" or bool(meta.get("queue"))}
+
+
+def _message_op(body: dict) -> dict:
+    return {"op": "message", "text": body.get("text", ""),
+            "attachments": body.get("attachments", []), "client_id": body.get("client_id")}
+
+
+@app.delete("/sessions/{sid}/queue/{qid}")
+async def dequeue_one(sid: str, qid: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    _require_session(sid)
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, sessionio.write_inbox, sid, {"op": "dequeue", "queue_id": qid})
     if not ok:
         raise HTTPException(503, "runner not accepting input")
     return {"ok": True}
+
+
+@app.delete("/sessions/{sid}/queue")
+async def dequeue_all(sid: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    _require_session(sid)
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, sessionio.write_inbox, sid, {"op": "dequeue", "queue_id": None})
+    if not ok:
+        raise HTTPException(503, "runner not accepting input")
+    return {"ok": True}
+
+
+@app.get("/sessions/{sid}/commands")
+def session_commands(sid: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    meta = _require_session(sid)
+    return {"commands": adapters.known_commands(meta), "shell": True}
 
 
 @app.post("/sessions/{sid}/interrupt")
@@ -309,9 +341,11 @@ async def stream(ws: WebSocket, sid: str):
                     continue
                 if msg.get("type") == "message":
                     await asyncio.get_event_loop().run_in_executor(
+                        None, sessionio.write_inbox, sid, _message_op(msg))
+                elif msg.get("type") == "dequeue":
+                    await asyncio.get_event_loop().run_in_executor(
                         None, sessionio.write_inbox, sid,
-                        {"op": "message", "text": msg.get("text", ""),
-                         "attachments": msg.get("attachments", [])})
+                        {"op": "dequeue", "queue_id": msg.get("queue_id")})
                 elif msg.get("type") == "interrupt":
                     await asyncio.get_event_loop().run_in_executor(
                         None, sessionio.write_inbox, sid, {"op": "interrupt"})
