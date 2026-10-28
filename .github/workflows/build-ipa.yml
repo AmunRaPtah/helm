@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15-intel  # arm64 macos-latest pool kept timing out unacquired (2026-10-28)
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
