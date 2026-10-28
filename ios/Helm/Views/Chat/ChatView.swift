@@ -30,7 +30,8 @@ struct ChatView: View {
                         ForEach(model.pending) { p in
                             PendingBubble(message: p, accent: accent,
                                           onRetry: { Task { await model.retry(p) } },
-                                          onDiscard: { model.discard(p) })
+                                          onDiscard: { model.discard(p) },
+                                          onCancel: { Task { await model.cancelQueued(p) } })
                         }
                         if model.isRunning {
                             TypingIndicator(color: accent)
@@ -124,7 +125,7 @@ struct ChatView: View {
     private var scrollKey: String {
         let last = model.transcript.items.last
         let len = last.map { $0.copyText.count } ?? 0
-        return "\(model.transcript.items.count)-\(len)-\(model.pending.count)-\(model.isRunning)"
+        return "\(model.transcript.items.count)-\(len)-\(model.pending.count)-\(model.pending.filter { $0.queueId != nil }.count)-\(model.isRunning)"
     }
 
     private var menu: some View {

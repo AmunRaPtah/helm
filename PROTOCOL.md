@@ -57,7 +57,9 @@ events.jsonl and each WebSocket frame is one Event:
 Types:
 | type | fields | meaning |
 |---|---|---|
-| `user` | `text`, `attachments: [path]` | message the user sent |
+| `user` | `text`, `attachments: [path]`, `queue_id`, `client_id` | message the user sent, emitted when its turn starts |
+| `queued` | `queue_id`, `client_id`, `text`, `attachments`, `position` | message is waiting behind the running turn |
+| `dequeued` | `queue_id`, `client_id` | queued message was cancelled |
 | `assistant_delta` | `msg_id`, `text` | streaming text chunk; append to bubble `msg_id` |
 | `assistant` | `msg_id`, `text` | final full text of bubble `msg_id` (replaces deltas) |
 | `thinking` | `msg_id`, `text` | reasoning summary, collapsible |
@@ -83,7 +85,10 @@ that only emits final `assistant` events is valid.
 | PATCH | `/sessions/{id}` | `{title?}` | `Session` |
 | DELETE | `/sessions/{id}` | | `{"ok":true}` (kills tmux, keeps files unless `?purge=1`) |
 | GET | `/sessions/{id}/events?after=N&limit=500` | | `[Event]` |
-| POST | `/sessions/{id}/messages` | `{text, attachments?: [path]}` | `{"ok":true}` (409 if state=running) |
+| POST | `/sessions/{id}/messages` | `{text, attachments?: [path], client_id?}` | `{"ok":true,"queued":bool}`; sent mid-turn it is queued, not rejected |
+| DELETE | `/sessions/{id}/queue/{queue_id}` | | `{"ok":true}`, cancel one queued message |
+| DELETE | `/sessions/{id}/queue` | | `{"ok":true}`, cancel all queued messages |
+| GET | `/sessions/{id}/commands` | | `{"commands":[name],"shell":true}`, slash commands for `/` completion |
 | POST | `/sessions/{id}/interrupt` | | `{"ok":true}` (SIGINT to current turn) |
 | POST | `/sessions/{id}/resume` | | `Session` (restart runner in tmux for an exited session, resuming native_session_id) |
 | POST | `/upload` | multipart `file`, form `session_id` | `{"path": "/root/.helm/sessions/<id>/uploads/<name>"}` |
@@ -93,9 +98,23 @@ that only emits final `assistant` events is valid.
 ## WebSocket
 `GET /sessions/{id}/stream?after=N` upgrades. Server first replays events with
 `seq > after`, then pushes new events live (tail of events.jsonl). Client may
-send `{"type":"message","text":...,"attachments":[...]}` or
-`{"type":"interrupt"}` over the socket as an alternative to REST. Server sends
+send `{"type":"message","text":...,"attachments":[...],"client_id":...}`,
+`{"type":"dequeue","queue_id":...}` or `{"type":"interrupt"}` over the socket as an alternative to REST. Server sends
 `{"type":"ping"}` every 20s. Client reconnects with `after=<last seq seen>`.
+
+## Queue and commands
+
+The runner runs one turn at a time. Messages that arrive while a turn runs go
+into a FIFO queue (persisted as `queue` in meta.json, so it survives a runner
+restart) and are fed in order as each turn ends. `client_id` is an opaque id
+the client picks so it can match its optimistic bubble to `queued`/`user`.
+
+Message text is interpreted by its first character:
+- `/name args` is passed to the harness unchanged (Claude runs it as a slash
+  command; output of local commands like `/cost` arrives as an `assistant` event).
+- `!cmd` runs `bash -lc cmd` in the session cwd on the box, not through the
+  harness. It emits a `tool_call` named `shell` and a `tool_result` whose
+  output ends with `[exit N]`. 600s timeout, interruptible.
 
 ## Harness adapters (runner side)
 - **claude / ds / cc**: one long-lived process:

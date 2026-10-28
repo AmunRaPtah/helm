@@ -68,10 +68,20 @@ struct APIClient {
         return list(v, key: "events").map(HelmEvent.init(raw:))
     }
 
-    func send(_ id: String, text: String, attachments: [String]) async throws {
+    func send(_ id: String, text: String, attachments: [String], clientId: String? = nil) async throws {
         var body: [String: JSONValue] = ["text": .string(text)]
+        if let clientId { body["client_id"] = .string(clientId) }
         if !attachments.isEmpty { body["attachments"] = .array(attachments.map { .string($0) }) }
         _ = try await request("POST", "/sessions/\(id)/messages", body: .object(body))
+    }
+
+    func dequeue(_ id: String, queueId: String) async throws {
+        _ = try await request("DELETE", "/sessions/\(id)/queue/\(queueId)")
+    }
+
+    /// Slash commands the session's harness accepts (without the leading `/`).
+    func commands(_ id: String) async throws -> [String] {
+        try await request("GET", "/sessions/\(id)/commands")["commands"]?.stringArray ?? []
     }
 
     func interrupt(_ id: String) async throws {

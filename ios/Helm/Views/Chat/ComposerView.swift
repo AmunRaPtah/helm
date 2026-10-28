@@ -10,6 +10,7 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            commandHints
             if !model.attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -56,37 +57,84 @@ struct ComposerView: View {
     }
 
     private var placeholder: String {
-        model.isExited ? "Session exited" : model.isRunning ? "Working\u{2026}" : "Message"
+        model.isExited ? "Session exited" : model.isRunning ? "Queue a message\u{2026}" : "Message, /command or !shell"
+    }
+
+    /// `/` completes the harness's slash commands; `!` runs a shell command on the box.
+    @ViewBuilder
+    private var commandHints: some View {
+        let d = model.draft
+        if d.hasPrefix("!") {
+            Label("Runs in a shell on the box in \(model.session.cwd)", systemImage: "terminal")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
+        } else if d.hasPrefix("/"), !d.contains(" "), !matches.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(matches, id: \.self) { c in
+                        Button {
+                            model.draft = "/\(c) "
+                            Haptics.tap()
+                        } label: {
+                            Text("/\(c)")
+                                .font(.caption.monospaced())
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color(.tertiarySystemFill), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+        }
+    }
+
+    private var matches: [String] {
+        let q = model.draft.dropFirst().lowercased()
+        let starts = model.commands.filter { $0.lowercased().hasPrefix(q) }
+        let contains = q.isEmpty ? [] : model.commands.filter { !$0.lowercased().hasPrefix(q) && $0.lowercased().contains(q) }
+        return Array((starts + contains).prefix(40))
     }
 
     @ViewBuilder
     private var actionButton: some View {
-        if model.isRunning {
-            Button {
-                Task { await model.interrupt() }
-            } label: {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .frame(width: 36, height: 36)
-                    .background(Color.primary, in: Circle())
-                    .foregroundStyle(Color(.systemBackground))
-            }
-            .accessibilityLabel("Stop")
-            .transition(.scale.combined(with: .opacity))
-        } else {
-            Button {
-                Task { await model.send() }
-            } label: {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 16, weight: .bold))
-                    .frame(width: 36, height: 36)
-                    .background(model.canSend ? accent : Color(.tertiarySystemFill), in: Circle())
-                    .foregroundStyle(model.canSend ? Color.white : Color.secondary)
-            }
-            .disabled(!model.canSend)
-            .accessibilityLabel("Send")
-            .transition(.scale.combined(with: .opacity))
+        HStack(spacing: 6) {
+            if model.isRunning { stopButton }
+            sendButton
         }
+    }
+
+    private var stopButton: some View {
+        Button {
+            Task { await model.interrupt() }
+        } label: {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 14, weight: .bold))
+                .frame(width: 36, height: 36)
+                .background(Color.primary, in: Circle())
+                .foregroundStyle(Color(.systemBackground))
+        }
+        .accessibilityLabel("Stop")
+        .transition(.scale.combined(with: .opacity))
+    }
+
+    private var sendButton: some View {
+        Button {
+            Task { await model.send() }
+        } label: {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 16, weight: .bold))
+                .frame(width: 36, height: 36)
+                .background(model.canSend ? accent : Color(.tertiarySystemFill), in: Circle())
+                .foregroundStyle(model.canSend ? Color.white : Color.secondary)
+        }
+        .disabled(!model.canSend)
+        .accessibilityLabel(model.isRunning ? "Queue message" : "Send")
     }
 
     private func upload(_ item: PhotosPickerItem) async {

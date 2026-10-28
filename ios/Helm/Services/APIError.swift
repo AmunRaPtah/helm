@@ -12,7 +12,7 @@ enum APIError: LocalizedError {
         case .notConfigured: return "Set the server URL and token in Settings."
         case .badURL: return "The server URL is not valid."
         case .http(401, _), .http(403, _): return "The server rejected the token (unauthorized)."
-        case .http(409, _): return "The session is busy. Stop the current turn first."
+        case .http(409, _): return "The session is busy. Try again in a moment."
         case .http(let code, let body):
             let b = body.trimmingCharacters(in: .whitespacesAndNewlines)
             return b.isEmpty ? "Server error \(code)." : "Server error \(code): \(b.prefix(200))"

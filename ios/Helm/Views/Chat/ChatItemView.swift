@@ -73,6 +73,7 @@ struct PendingBubble: View {
     let accent: Color
     var onRetry: () -> Void
     var onDiscard: () -> Void
+    var onCancel: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
@@ -82,6 +83,13 @@ struct PendingBubble: View {
                     Text("Not sent").foregroundStyle(.red)
                     Button("Retry", action: onRetry)
                     Button("Discard", role: .destructive, action: onDiscard)
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+            } else if message.queueId != nil {
+                HStack(spacing: 12) {
+                    Label("Queued", systemImage: "clock").foregroundStyle(.secondary)
+                    Button("Cancel", role: .destructive, action: onCancel)
                 }
                 .font(.caption)
                 .buttonStyle(.borderless)

@@ -2,10 +2,13 @@ import Foundation
 import Observation
 
 struct PendingMessage: Identifiable, Equatable {
-    let id = UUID()
+    var id = UUID()
     var text: String
     var attachments: [String]
     var failed = false
+    /// Set once the runner has queued it behind the running turn.
+    var queueId: String?
+    var clientId: String { id.uuidString }
 }
 
 struct Attachment: Identifiable, Equatable {
@@ -29,6 +32,8 @@ final class ChatModel {
     private(set) var isResuming = false
     /// Bumped when the turn finishes live, so the view can play a haptic.
     private(set) var turnCompletions = 0
+    /// Slash commands the harness accepts, without the leading `/`.
+    private(set) var commands: [String] = []
 
     let stream: SessionStream
 
@@ -44,6 +49,7 @@ final class ChatModel {
         if let log = DiskCache.loadEvents(session.id) {
             rawEvents = log.events
             for e in log.events { transcript.apply(e) }
+            restoreQueue(from: log.events)
         }
         stream.onEvents = { [weak self] batch in self?.ingest(batch) }
     }
@@ -60,7 +66,7 @@ final class ChatModel {
     var isRunning: Bool { state == .running || state == .starting }
     var isExited: Bool { state == .exited }
     var canSend: Bool {
-        !isRunning && !isExited && !attachments.contains { $0.isUploading }
+        !isExited && !attachments.contains { $0.isUploading }
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments.contains { $0.path != nil })
     }
 
@@ -69,6 +75,12 @@ final class ChatModel {
     func start() {
         openedAt = Date().timeIntervalSince1970
         stream.start(after: transcript.maxSeq)
+        if commands.isEmpty {
+            Task { [weak self] in
+                guard let self else { return }
+                if let c = try? await self.api.commands(self.session.id) { self.commands = c }
+            }
+        }
     }
 
     func stop() {
@@ -102,7 +114,12 @@ final class ChatModel {
             let wasRunning = isRunning
             if transcript.apply(e) { changed = true }
             rawEvents.append(e)
-            if e.type == "user" { reconcilePending(e.text) }
+            switch e.type {
+            case "user": reconcilePending(e)
+            case "queued": markQueued(e)
+            case "dequeued": pending.removeAll { $0.queueId == e.queueId || $0.clientId == e.clientId }
+            default: break
+            }
             if e.type == "status", wasRunning, !isRunning, (e.ts ?? 0) >= openedAt - 2 {
                 turnCompletions += 1
             }
@@ -114,13 +131,39 @@ final class ChatModel {
         if changed { schedulePersist() }
     }
 
-    private func reconcilePending(_ text: String) {
+    private func reconcilePending(_ e: HelmEvent) {
         guard !pending.isEmpty else { return }
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let i = pending.firstIndex(where: { ($0.queueId != nil && $0.queueId == e.queueId) || $0.clientId == e.clientId }) {
+            pending.remove(at: i)
+            return
+        }
+        // Messages from older servers carry no ids: match on text.
+        let t = e.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let i = pending.firstIndex(where: { t.hasPrefix($0.text.trimmingCharacters(in: .whitespacesAndNewlines)) }) {
             pending.remove(at: i)
         } else {
             pending.removeFirst()
+        }
+    }
+
+    private func markQueued(_ e: HelmEvent) {
+        if let i = pending.firstIndex(where: { $0.clientId == e.clientId }) {
+            pending[i].queueId = e.queueId
+        } else if !pending.contains(where: { $0.queueId == e.queueId }) {
+            // Queued from another device, or before the app was relaunched.
+            pending.append(PendingMessage(id: UUID(uuidString: e.clientId ?? "") ?? UUID(),
+                                          text: e.text, attachments: e.attachments, queueId: e.queueId))
+        }
+    }
+
+    /// Rebuild the queue from cached events: queued items not yet run or cancelled.
+    private func restoreQueue(from events: [HelmEvent]) {
+        var done = Set<String>()
+        for e in events where e.type == "user" || e.type == "dequeued" {
+            if let q = e.queueId { done.insert(q) }
+        }
+        for e in events where e.type == "queued" {
+            if let q = e.queueId, !done.contains(q) { markQueued(e) }
         }
     }
 
@@ -136,7 +179,7 @@ final class ChatModel {
         pending.append(msg)
         Haptics.send()
         do {
-            try await api.send(session.id, text: text, attachments: paths)
+            try await api.send(session.id, text: text, attachments: paths, clientId: msg.clientId)
             banner = nil
             if !stream.isRunning { start() }
         } catch {
@@ -154,6 +197,15 @@ final class ChatModel {
     }
 
     func discard(_ p: PendingMessage) { pending.removeAll { $0.id == p.id } }
+
+    /// Cancel a message waiting behind the running turn.
+    func cancelQueued(_ p: PendingMessage) async {
+        guard let q = p.queueId else { return }
+        Haptics.tap()
+        let frame: JSONValue = .object(["type": .string("dequeue"), "queue_id": .string(q)])
+        if await stream.sendFrame(frame) { return }
+        do { try await api.dequeue(session.id, queueId: q) } catch { banner = APIClient.describe(error) }
+    }
 
     func interrupt() async {
         Haptics.tap()

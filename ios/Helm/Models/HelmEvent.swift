@@ -27,4 +27,6 @@ struct HelmEvent: Codable, Hashable {
     var inputTokens: Int? { raw["input_tokens"]?.int }
     var outputTokens: Int? { raw["output_tokens"]?.int }
     var costUSD: Double? { raw["cost_usd"]?.double }
+    var queueId: String? { raw["queue_id"]?.string }
+    var clientId: String? { raw["client_id"]?.string }
 }
