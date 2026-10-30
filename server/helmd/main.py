@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import os
 import shutil
@@ -27,7 +28,7 @@ def check_auth(authorization: Optional[str] = Header(None)):
     token = config.load_token()
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "missing bearer token")
-    if authorization[7:] != token:
+    if not hmac.compare_digest(authorization[7:].encode(), token.encode()):
         raise HTTPException(401, "bad token")
 
 
@@ -300,13 +301,16 @@ async def stream(ws: WebSocket, sid: str):
     token = ws.headers.get("authorization")
     if token and token.startswith("Bearer "):
         token = token[7:]
-    else:
+    elif ws.headers.get("x-helm-route") != "public":
+        # Query-param fallback only on wg0; the public Caddy route logs URLs.
         token = ws.query_params.get("token")
+    else:
+        token = None
     try:
         expected = config.load_token()
     except Exception:
         expected = None
-    if not token or token != expected:
+    if not token or not expected or not hmac.compare_digest(token.encode(), expected.encode()):
         await ws.close(code=4401)
         return
     meta = sessionio.read_meta(sid)

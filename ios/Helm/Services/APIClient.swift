@@ -9,7 +9,7 @@ struct APIClient {
         c.timeoutIntervalForRequest = 20
         c.waitsForConnectivity = false
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: c)
+        return URLSession(configuration: c, delegate: ClientCertDelegate.shared, delegateQueue: nil)
     }()
 
     // MARK: Endpoints

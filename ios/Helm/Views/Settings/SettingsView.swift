@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     var isOnboarding = false
@@ -12,6 +13,11 @@ struct SettingsView: View {
     @State private var revealToken = false
     @State private var test = ConnectionTest.State.idle
     @State private var loaded = false
+    @State private var certName: String? = ClientIdentity.installedName
+    @State private var showImporter = false
+    @State private var pendingP12: Data?
+    @State private var p12Password = ""
+    @State private var certError: String?
 
     private var draft: ServerConfig { ServerConfig(urlString: url, token: token.trimmingCharacters(in: .whitespacesAndNewlines)) }
 
@@ -59,7 +65,30 @@ struct SettingsView: View {
             } header: {
                 Text("Server")
             } footer: {
-                Text("helmd on your box, reached over WireGuard. The token is in Bitwarden as \u{201C}Helm Token\u{201D} and is stored in the iOS Keychain.")
+                Text("Over WireGuard: http://10.66.66.1:3340. Without it: https://helm.178-18-250-254.sslip.io plus the client certificate below. The token is in Bitwarden as \u{201C}Helm Token\u{201D} and is stored in the iOS Keychain.")
+            }
+
+            Section {
+                if let certName {
+                    LabeledContent("Installed", value: certName)
+                    Button("Remove certificate", role: .destructive) {
+                        ClientIdentity.remove()
+                        self.certName = nil
+                    }
+                } else {
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("Import .p12 certificate", systemImage: "lock.shield")
+                    }
+                }
+                if let certError {
+                    Text(certError).font(.footnote).foregroundStyle(.red)
+                }
+            } header: {
+                Text("Client certificate")
+            } footer: {
+                Text("Required for the public https route, which rejects any device without it before helmd is reached. Not needed over WireGuard.")
             }
 
             Section {
@@ -103,6 +132,29 @@ struct SettingsView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
             }
         }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pkcs12, .data]) { result in
+            certError = nil
+            switch result {
+            case .success(let fileURL):
+                let scoped = fileURL.startAccessingSecurityScopedResource()
+                defer { if scoped { fileURL.stopAccessingSecurityScopedResource() } }
+                if let data = try? Data(contentsOf: fileURL) {
+                    p12Password = ""
+                    pendingP12 = data
+                } else {
+                    certError = "Could not read that file."
+                }
+            case .failure(let error):
+                certError = error.localizedDescription
+            }
+        }
+        .alert("Certificate password", isPresented: Binding(get: { pendingP12 != nil }, set: { if !$0 { pendingP12 = nil } })) {
+            SecureField("Password", text: $p12Password)
+            Button("Import") { importPending() }
+            Button("Cancel", role: .cancel) { pendingP12 = nil }
+        } message: {
+            Text("In Bitwarden as \u{201C}Helm Client Cert\u{201D}.")
+        }
         .onAppear {
             guard !loaded else { return }
             loaded = true
@@ -117,6 +169,20 @@ struct SettingsView: View {
         test = .running
         test = await ConnectionTest.run(draft)
         if case .success = test { Haptics.success() } else { Haptics.warning() }
+    }
+
+    private func importPending() {
+        guard let data = pendingP12 else { return }
+        pendingP12 = nil
+        do {
+            certName = try ClientIdentity.importP12(data, password: p12Password)
+            certError = nil
+            Haptics.success()
+        } catch {
+            certError = error.localizedDescription
+            Haptics.warning()
+        }
+        p12Password = ""
     }
 
     private func save() {
@@ -139,7 +205,7 @@ private struct OnboardingHeader: View {
                 .padding(.top, 8)
             Text("Helm")
                 .font(.title.weight(.semibold))
-            Text("Chat with the coding harnesses on your server. Turn on WireGuard, then enter your helmd URL and token.")
+            Text("Chat with the coding harnesses on your server. Enter your helmd URL and token. Off WireGuard, use the https URL and import your client certificate.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

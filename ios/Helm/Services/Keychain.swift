@@ -5,6 +5,10 @@ enum Keychain {
     private static let service = "org.zyco.helm"
 
     static func read(_ account: String) -> String? {
+        readData(account).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    static func readData(_ account: String) -> Data? {
         let q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -15,11 +19,16 @@ enum Keychain {
         var out: AnyObject?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
               let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        return data
     }
 
     @discardableResult
     static func write(_ value: String, account: String) -> Bool {
+        writeData(Data(value.utf8), account: account)
+    }
+
+    @discardableResult
+    static func writeData(_ value: Data, account: String) -> Bool {
         delete(account)
         guard !value.isEmpty else { return true }
         let q: [String: Any] = [
@@ -27,7 +36,7 @@ enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-            kSecValueData as String: Data(value.utf8),
+            kSecValueData as String: value,
         ]
         return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
     }

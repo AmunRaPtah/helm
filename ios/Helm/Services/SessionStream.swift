@@ -32,7 +32,7 @@ final class SessionStream {
     private static let urlSession: URLSession = {
         let c = URLSessionConfiguration.default
         c.timeoutIntervalForRequest = 60
-        return URLSession(configuration: c)
+        return URLSession(configuration: c, delegate: ClientCertDelegate.shared, delegateQueue: nil)
     }()
 
     init(sessionId: String, config: ServerConfig) {
@@ -157,10 +157,9 @@ final class SessionStream {
               var comps = URLComponents(url: base.appendingPathComponent("/sessions/\(sessionId)/stream"),
                                         resolvingAgainstBaseURL: false) else { return nil }
         comps.scheme = (comps.scheme == "https") ? "wss" : "ws"
-        comps.queryItems = [
-            URLQueryItem(name: "after", value: String(lastSeq)),
-            URLQueryItem(name: "token", value: config.token),
-        ]
+        comps.queryItems = [URLQueryItem(name: "after", value: String(lastSeq))]
+        // Query token only over plain ws (wg0); the public route accepts the header only.
+        if comps.scheme == "ws" { comps.queryItems?.append(URLQueryItem(name: "token", value: config.token)) }
         guard let url = comps.url else { return nil }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")

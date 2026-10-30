@@ -8,6 +8,13 @@ Two halves share this contract: `server/` (helmd, Python) and `ios/` (SwiftUI).
 - Every request carries `Authorization: Bearer <token>`. WebSocket: same header,
   or `?token=` query param as fallback. Token lives in `~/.helm/token` (chmod 600)
   and in Bitwarden item "Helm Token".
+- Public route (no WireGuard): `https://helm.178-18-250-254.sslip.io`, Caddy
+  with mTLS (`client_auth require_and_verify`, CA `/root/.helm/pki/ca.pem`,
+  copied to `/etc/caddy/helm/ca.pem`), proxied to wg0:3340 with
+  `X-Helm-Route: public`. On that route the WebSocket `?token=` fallback is
+  refused (URLs get logged); use the header. Client cert + p12 password are in
+  Bitwarden item "Helm Client Cert". Issue another device cert from
+  `/root/.helm/pki` with the same openssl steps (`-legacy` p12 for iOS).
 - All bodies are JSON. Timestamps are unix seconds (float). IDs are short
   lowercase strings (`[a-z0-9]{8}`).
 
