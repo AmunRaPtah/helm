@@ -15,7 +15,7 @@ struct SettingsView: View {
     @State private var loaded = false
     @State private var certName: String? = ClientIdentity.installedName
     @State private var showImporter = false
-    private var inbox = CertInbox.shared
+    @State private var inbox = CertInbox.shared
     @State private var p12Password = ""
     @State private var certError: String?
 
