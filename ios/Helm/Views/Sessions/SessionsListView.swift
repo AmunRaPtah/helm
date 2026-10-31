@@ -37,6 +37,10 @@ struct SessionsListView: View {
         .sheet(isPresented: $showSettings) {
             NavigationStack { SettingsView() }
         }
+        // A certificate shared into Helm is finished in Settings.
+        .onChange(of: CertInbox.shared.pending != nil, initial: true) { _, has in
+            if has && !showNew { showSettings = true }
+        }
         .confirmationDialog("Delete this chat?", isPresented: Binding(
             get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
         ), titleVisibility: .visible, presenting: pendingDelete) { s in

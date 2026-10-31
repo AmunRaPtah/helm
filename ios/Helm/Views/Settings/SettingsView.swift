@@ -15,7 +15,7 @@ struct SettingsView: View {
     @State private var loaded = false
     @State private var certName: String? = ClientIdentity.installedName
     @State private var showImporter = false
-    @State private var pendingP12: Data?
+    private var inbox = CertInbox.shared
     @State private var p12Password = ""
     @State private var certError: String?
 
@@ -75,7 +75,7 @@ struct SettingsView: View {
                         ClientIdentity.remove()
                         self.certName = nil
                     }
-                } else if pendingP12 != nil {
+                } else if inbox.pending != nil {
                     // Inline rather than an alert: an alert raised while the file picker is
                     // still dismissing is silently dropped by SwiftUI.
                     SecureField("Certificate password", text: $p12Password)
@@ -84,7 +84,7 @@ struct SettingsView: View {
                     Button("Import") { importPending() }
                         .disabled(p12Password.isEmpty)
                     Button("Cancel", role: .cancel) {
-                        pendingP12 = nil
+                        inbox.pending = nil
                         p12Password = ""
                     }
                 } else {
@@ -93,6 +93,17 @@ struct SettingsView: View {
                     } label: {
                         Label("Import .p12 certificate", systemImage: "lock.shield")
                     }
+                    Button {
+                        certError = nil
+                        if let text = UIPasteboard.general.string, let data = CertInbox.decodePasted(text) {
+                            p12Password = ""
+                            inbox.pending = data
+                        } else {
+                            certError = "Clipboard does not hold a base64 certificate."
+                        }
+                    } label: {
+                        Label("Paste certificate text", systemImage: "doc.on.clipboard")
+                    }
                 }
                 if let certError {
                     Text(certError).font(.footnote).foregroundStyle(.red)
@@ -100,7 +111,7 @@ struct SettingsView: View {
             } header: {
                 Text("Client certificate")
             } footer: {
-                Text("Password is in Bitwarden as \u{201C}Helm Client Cert\u{201D}. Required for the public https route, which rejects any device without it before helmd is reached. Not needed over WireGuard.")
+                Text("Or share the .p12 to Helm from Telegram, Mail or Files. Password is in Bitwarden as \u{201C}Helm Client Cert\u{201D}. Required for the public https route, which rejects any device without it before helmd is reached. Not needed over WireGuard.")
             }
 
             Section {
@@ -152,7 +163,7 @@ struct SettingsView: View {
                 defer { if scoped { fileURL.stopAccessingSecurityScopedResource() } }
                 if let data = try? Data(contentsOf: fileURL) {
                     p12Password = ""
-                    pendingP12 = data
+                    inbox.pending = data
                 } else {
                     certError = "Could not read that file."
                 }
@@ -161,6 +172,7 @@ struct SettingsView: View {
             }
         }
         .onAppear {
+            certName = ClientIdentity.installedName
             guard !loaded else { return }
             loaded = true
             url = store.config.urlString.isEmpty ? ServerConfig.defaultURL : store.config.urlString
@@ -177,8 +189,8 @@ struct SettingsView: View {
     }
 
     private func importPending() {
-        guard let data = pendingP12 else { return }
-        pendingP12 = nil
+        guard let data = inbox.pending else { return }
+        inbox.pending = nil
         do {
             certName = try ClientIdentity.importP12(data, password: p12Password)
             certError = nil

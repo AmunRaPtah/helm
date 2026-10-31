@@ -10,6 +10,7 @@ struct HelmApp: App {
             RootView()
                 .environment(store)
                 .preferredColorScheme(Appearance(rawValue: appearance)?.colorScheme)
+                .onOpenURL { CertInbox.shared.receive($0) }
         }
     }
 }
