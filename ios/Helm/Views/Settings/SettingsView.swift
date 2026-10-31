@@ -75,6 +75,18 @@ struct SettingsView: View {
                         ClientIdentity.remove()
                         self.certName = nil
                     }
+                } else if pendingP12 != nil {
+                    // Inline rather than an alert: an alert raised while the file picker is
+                    // still dismissing is silently dropped by SwiftUI.
+                    SecureField("Certificate password", text: $p12Password)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button("Import") { importPending() }
+                        .disabled(p12Password.isEmpty)
+                    Button("Cancel", role: .cancel) {
+                        pendingP12 = nil
+                        p12Password = ""
+                    }
                 } else {
                     Button {
                         showImporter = true
@@ -88,7 +100,7 @@ struct SettingsView: View {
             } header: {
                 Text("Client certificate")
             } footer: {
-                Text("Required for the public https route, which rejects any device without it before helmd is reached. Not needed over WireGuard.")
+                Text("Password is in Bitwarden as \u{201C}Helm Client Cert\u{201D}. Required for the public https route, which rejects any device without it before helmd is reached. Not needed over WireGuard.")
             }
 
             Section {
@@ -147,13 +159,6 @@ struct SettingsView: View {
             case .failure(let error):
                 certError = error.localizedDescription
             }
-        }
-        .alert("Certificate password", isPresented: Binding(get: { pendingP12 != nil }, set: { if !$0 { pendingP12 = nil } })) {
-            SecureField("Password", text: $p12Password)
-            Button("Import") { importPending() }
-            Button("Cancel", role: .cancel) { pendingP12 = nil }
-        } message: {
-            Text("In Bitwarden as \u{201C}Helm Client Cert\u{201D}.")
         }
         .onAppear {
             guard !loaded else { return }

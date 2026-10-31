@@ -11,11 +11,11 @@ enum ClientIdentity {
     private static var loaded = false
 
     enum ImportError: LocalizedError {
-        case badPassword, invalidFile, keychain
+        case badPassword, invalidFile(OSStatus), keychain
         var errorDescription: String? {
             switch self {
             case .badPassword: return "Wrong password for this certificate."
-            case .invalidFile: return "Not a usable .p12 client certificate."
+            case .invalidFile(let status): return "Not a usable .p12 client certificate (OSStatus \(status))."
             case .keychain: return "Could not save to the Keychain."
             }
         }
@@ -60,9 +60,9 @@ enum ClientIdentity {
         var items: CFArray?
         let status = SecPKCS12Import(data as CFData, [kSecImportExportPassphrase as String: password] as CFDictionary, &items)
         if status == errSecAuthFailed { throw ImportError.badPassword }
-        guard status == errSecSuccess,
-              let first = (items as? [[String: Any]])?.first,
-              let idRef = first[kSecImportItemIdentity as String] else { throw ImportError.invalidFile }
+        guard status == errSecSuccess else { throw ImportError.invalidFile(status) }
+        guard let first = (items as? [[String: Any]])?.first,
+              let idRef = first[kSecImportItemIdentity as String] else { throw ImportError.invalidFile(errSecItemNotFound) }
         let identity = idRef as! SecIdentity
         var leaf: SecCertificate?
         SecIdentityCopyCertificate(identity, &leaf)
