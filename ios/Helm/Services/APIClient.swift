@@ -125,6 +125,74 @@ struct APIClient {
         return path
     }
 
+    // MARK: Box remote control
+
+    func boxSystem() async throws -> BoxSystem {
+        BoxSystem(json: try await request("GET", "/box/system"))
+    }
+
+    func boxTmux() async throws -> [TmuxSession] {
+        list(try await request("GET", "/box/tmux"), key: "sessions").compactMap(TmuxSession.init(json:))
+    }
+
+    func boxTmuxCapture(_ name: String, lines: Int = 200) async throws -> String {
+        let v = try await request("GET", "/box/tmux/\(encode(name))/capture",
+                                  query: [URLQueryItem(name: "lines", value: String(lines))])
+        return v["text"]?.string ?? ""
+    }
+
+    func boxTmuxSend(_ name: String, keys: String) async throws {
+        _ = try await request("POST", "/box/tmux/\(encode(name))/send", body: .object(["keys": .string(keys)]))
+    }
+
+    func boxTmuxKill(_ name: String) async throws {
+        _ = try await request("DELETE", "/box/tmux/\(encode(name))")
+    }
+
+    func boxServices() async throws -> [BoxService] {
+        list(try await request("GET", "/box/services"), key: "services").compactMap(BoxService.init(json:))
+    }
+
+    @discardableResult
+    func boxServiceAction(_ name: String, action: String) async throws -> JSONValue {
+        try await request("POST", "/box/services/\(encode(name))/\(action)")
+    }
+
+    func boxClaudeSessions(limit: Int = 40) async throws -> [ClaudeSessionRef] {
+        let v = try await request("GET", "/box/claude-sessions",
+                                  query: [URLQueryItem(name: "limit", value: String(limit))])
+        return list(v, key: "sessions").compactMap(ClaudeSessionRef.init(json:))
+    }
+
+    func boxClaudeTranscript(project: String, id: String, tail: Int = 60) async throws -> [ClaudeTurn] {
+        let v = try await request("GET", "/box/claude-sessions/\(encode(project))/\(encode(id))",
+                                  query: [URLQueryItem(name: "tail", value: String(tail))])
+        return list(v, key: "turns").compactMap(ClaudeTurn.init(json:))
+    }
+
+    func boxBurst() async throws -> [BurstModel] {
+        list(try await request("GET", "/box/burst"), key: "models").compactMap(BurstModel.init(json:))
+    }
+
+    @discardableResult
+    func boxBurstAction(_ model: String, action: String) async throws -> JSONValue {
+        try await request("POST", "/box/burst/\(model)/\(action)")
+    }
+
+    func boxShell(_ cmd: String, cwd: String? = nil, timeout: Int = 120) async throws -> ShellResult {
+        var body: [String: JSONValue] = ["cmd": .string(cmd), "timeout": .double(Double(timeout))]
+        if let cwd, !cwd.isEmpty { body["cwd"] = .string(cwd) }
+        var req = try makeRequest("POST", "/box/shell", query: [], auth: true)
+        req.timeoutInterval = Double(timeout) + 15
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let data = try JSONEncoder().encode(JSONValue.object(body))
+        return ShellResult(json: try await perform(req, body: data))
+    }
+
+    private func encode(_ s: String) -> String {
+        s.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? s
+    }
+
     // MARK: Plumbing
 
     /// Accepts either a bare array or an object wrapping it (tolerant of either shape).

@@ -66,21 +66,63 @@ def _is_image(path):
 # the wrapper that injects the pinned OAuth token, and auth then fails.
 CLAUDE_WRAPPER = "/usr/local/bin/claude"
 
+# Stream-json flags every claude-family harness needs. The burst (glm/dsv) and
+# sukuna launchers all end in `exec claude ... "$@"` (claude-burst via
+# session.py), so appending these flags to the launcher makes it emit the same
+# NDJSON the plain claude harness does, so one parser (`claude_parse`) covers all.
+_STREAM_FLAGS = ["-p", "--input-format", "stream-json", "--output-format",
+                 "stream-json", "--verbose", "--include-partial-messages"]
+
+# Harnesses that are a launcher wrapping claude on a GPU-burst / alt backend.
+# Value: (launcher path, extra prefix args the launcher consumes before the
+# stream flags). The burst launchers already bake in model + permissions
+# (claude-burst runs bypass-free but we add the mode; sukuna adds
+# --dangerously-skip-permissions itself).
+BURST_LAUNCHERS = {
+    "glm": ("/root/.local/bin/glm", ["--max-hours", "6"]),
+    "dsv": ("/root/.local/bin/dsv", ["--max-hours", "6"]),
+}
+SUKUNA_LAUNCHER = "/root/.local/bin/sukuna"
+
+
+def _sandbox_env():
+    return {"IS_SANDBOX": "1"} if os.geteuid() == 0 else {}
+
 
 def claude_cmd(meta):
+    h = meta["harness"]
+
+    if h in BURST_LAUNCHERS:
+        launcher, prefix = BURST_LAUNCHERS[h]
+        cmd = [launcher] + prefix + _STREAM_FLAGS
+        cmd += ["--permission-mode",
+                PERMISSION_MAP_CLAUDE.get(meta["permission"], "bypassPermissions")]
+        if meta.get("native_session_id"):
+            cmd += ["--resume", meta["native_session_id"]]
+        # Burst models are fixed by the launcher; ignore any meta["model"].
+        return cmd, _sandbox_env()
+
+    if h == "sukuna":
+        # sukuna already exec's claude with --dangerously-skip-permissions and
+        # --append-system-prompt; just hand it the stream flags.
+        cmd = [SUKUNA_LAUNCHER] + _STREAM_FLAGS
+        if meta.get("native_session_id"):
+            cmd += ["--resume", meta["native_session_id"]]
+        return cmd, _sandbox_env()
+
     exe = meta["harness"]
     if exe == "claude" and os.access(CLAUDE_WRAPPER, os.X_OK):
         exe = CLAUDE_WRAPPER
-    cmd = [exe, "-p", "--input-format", "stream-json",
-           "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-           "--permission-mode", PERMISSION_MAP_CLAUDE.get(meta["permission"], "bypassPermissions")]
+    cmd = [exe] + _STREAM_FLAGS + [
+        "--permission-mode",
+        PERMISSION_MAP_CLAUDE.get(meta["permission"], "bypassPermissions")]
     if meta.get("model"):
         cmd += ["--model", meta["model"]]
     if meta.get("native_session_id"):
         cmd += ["--resume", meta["native_session_id"]]
     # claude refuses bypassPermissions as root unless IS_SANDBOX is set; don't
     # rely on the tmux server happening to inherit it.
-    return cmd, {"IS_SANDBOX": "1"} if os.geteuid() == 0 else {}
+    return cmd, _sandbox_env()
 
 
 def claude_input_line(text, attachments):
@@ -313,4 +355,4 @@ def codex_parse(obj):
     return events, native_id
 
 
-LONG_LIVED = {"claude", "ds", "cc", "agy"}
+LONG_LIVED = {"claude", "ds", "cc", "agy", "glm", "dsv", "sukuna"}

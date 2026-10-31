@@ -12,7 +12,9 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from . import adapters, config, sessionio
+from pydantic import BaseModel
+
+from . import adapters, box, config, sessionio
 from .harnesses import get_harnesses
 from .idgen import new_id
 
@@ -292,6 +294,92 @@ def quota(authorization: Optional[str] = Header(None)):
         return json.loads(out)
     except Exception:
         return {}
+
+
+# ---------- box remote control ----------
+
+@app.get("/box/system")
+def box_system(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return box.system_status()
+
+
+@app.get("/box/tmux")
+def box_tmux(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"sessions": box.tmux_sessions()}
+
+
+@app.get("/box/tmux/{name}/capture")
+def box_tmux_capture(name: str, lines: int = Query(200),
+                     authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"name": name, "text": box.tmux_capture(name, lines)}
+
+
+class TmuxSend(BaseModel):
+    keys: str
+
+
+@app.post("/box/tmux/{name}/send")
+def box_tmux_send(name: str, body: TmuxSend, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"ok": box.tmux_send(name, body.keys)}
+
+
+@app.delete("/box/tmux/{name}")
+def box_tmux_kill(name: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"ok": box.tmux_kill(name)}
+
+
+@app.get("/box/services")
+def box_services(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"services": box.service_status()}
+
+
+@app.post("/box/services/{name}/{action}")
+def box_service_action(name: str, action: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return box.service_action(name, action)
+
+
+@app.get("/box/claude-sessions")
+def box_claude_sessions(limit: int = Query(40), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"sessions": box.claude_sessions(limit)}
+
+
+@app.get("/box/claude-sessions/{project}/{sid}")
+def box_claude_transcript(project: str, sid: str, tail: int = Query(60),
+                          authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return box.claude_transcript(project, sid, tail)
+
+
+@app.get("/box/burst")
+def box_burst(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"models": box.burst_status()}
+
+
+@app.post("/box/burst/{model}/{action}")
+def box_burst_action(model: str, action: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return box.burst_action(model, action)
+
+
+class ShellBody(BaseModel):
+    cmd: str
+    cwd: Optional[str] = None
+    timeout: int = 120
+
+
+@app.post("/box/shell")
+def box_shell(body: ShellBody, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return box.run_shell(body.cmd, body.cwd, body.timeout)
 
 
 # ---------- WebSocket ----------

@@ -14,6 +14,9 @@ struct HarnessStyle {
         case "cc": return .init(color: Color(hex: 0xA970FF), symbol: "bolt.fill", shortName: "Compound")
         case "agy": return .init(color: Color(hex: 0xF4B400), symbol: "atom", shortName: "Antigravity")
         case "dsh": return .init(color: Color(hex: 0x38BDF8), symbol: "terminal", shortName: "DSH")
+        case "glm": return .init(color: Color(hex: 0x22C55E), symbol: "cpu.fill", shortName: "GLM")
+        case "dsv": return .init(color: Color(hex: 0x0EA5E9), symbol: "water.waves", shortName: "DeepSeek V4")
+        case "sukuna": return .init(color: Color(hex: 0xDC2626), symbol: "flame.fill", shortName: "Sukuna")
         default: return .init(color: .gray, symbol: "cpu", shortName: id)
         }
     }

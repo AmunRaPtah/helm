@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import subprocess
@@ -21,10 +22,26 @@ _BASE = [
     {"id": "codex", "name": "Codex", "command": "codex",
      "supports_profiles": True, "profiles": [], "models": [],
      "default_model": None, "note": None},
+    {"id": "glm", "name": "GLM-5.3-Flash (burst)", "command": "glm",
+     "supports_profiles": False, "profiles": [], "models": [],
+     "default_model": None, "note": "Modal GPU burst, cold start ~3 min"},
+    {"id": "dsv", "name": "DeepSeek-V4.1 (burst)", "command": "dsv",
+     "supports_profiles": False, "profiles": [], "models": [],
+     "default_model": None, "note": "Modal GPU burst, cold start ~3 min"},
+    {"id": "sukuna", "name": "Sukuna (offensive)", "command": "sukuna",
+     "supports_profiles": False, "profiles": [], "models": [],
+     "default_model": None, "note": "uncensored Venice model, no refusals"},
     {"id": "dsh", "name": "DeepSeek Harness", "command": "dsh",
      "supports_profiles": False, "profiles": [], "models": [],
      "default_model": None, "available": False, "note": "phase 2"},
 ]
+
+# Harnesses whose `command` is an absolute launcher path, not a $PATH binary.
+_LAUNCHER_PATHS = {
+    "glm": "/root/.local/bin/glm",
+    "dsv": "/root/.local/bin/dsv",
+    "sukuna": "/root/.local/bin/sukuna",
+}
 
 _CX_LINE_RE = re.compile(r"^(\S+)\s+(\S+)\s")
 
@@ -54,7 +71,10 @@ def get_harnesses() -> list:
     out = []
     for h in _BASE:
         h = dict(h)
-        h.setdefault("available", shutil.which(h["command"]) is not None)
+        if h["id"] in _LAUNCHER_PATHS:
+            h.setdefault("available", os.access(_LAUNCHER_PATHS[h["id"]], os.X_OK))
+        else:
+            h.setdefault("available", shutil.which(h["command"]) is not None)
         if h["id"] == "codex":
             profiles = _cx_profiles()
             h["profiles"] = [p["name"] for p in profiles]

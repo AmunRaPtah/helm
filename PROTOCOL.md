@@ -55,6 +55,16 @@ v1 harness ids: `claude`, `ds`, `cc`, `agy`, `codex`. `codex` has
 `supports_profiles: true` and `profiles` = cx profile names (from `cx ls`).
 `dsh` is listed with `available: false, note: "phase 2"`.
 
+Added harnesses (all claude-family, parsed by the claude NDJSON parser; each is
+a launcher that ends in `exec claude ... "$@"`, so Helm appends its stream-json
+flags to the launcher rather than reimplementing its env):
+- `glm`: GLM-5.3-Flash abliterated on Modal GPU burst (`/root/.local/bin/glm`,
+  which pins a warm container via `session.py run` for the session's life). Cold
+  start ~3 min; the `[burst-session]` banner lines arrive as `system` events.
+- `dsv`: DeepSeek-V4.1 abliterated on Modal GPU burst (`/root/.local/bin/dsv`).
+- `sukuna`: uncensored Venice model via the local LiteLLM proxy
+  (`/root/.local/bin/sukuna`), offensive-security profile, no refusals.
+
 ## Event stream
 Events are append-only, numbered by `seq` (1-based, per session). Each line in
 events.jsonl and each WebSocket frame is one Event:
@@ -101,6 +111,26 @@ that only emits final `assistant` events is valid.
 | POST | `/upload` | multipart `file`, form `session_id` | `{"path": "/root/.helm/sessions/<id>/uploads/<name>"}` |
 | GET | `/dirs?path=/root/projects` | | `{"path", "entries":[{"name","is_dir"}]}` (dirs only, for cwd picker) |
 | GET | `/quota` | | raw JSON from `quota-axi --json` if available, else `{}` |
+
+## Box remote control
+helmd doubles as a remote control for the box. Same bearer token; reachable on
+both wg0 and the public mTLS route (owner's choice, 2026-10-31). All output is
+bounded (shell/tmux/transcript capped at ~20 KB).
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | `/box/system` | | `{uptime_seconds, loadavg:[3], cpus, mem_total_mb, mem_available_mb, mem_used_mb, swap_total_mb, swap_used_mb, disk_total_gb, disk_free_gb, disk_used_pct, hostname, now}` |
+| GET | `/box/tmux` | | `{"sessions":[{name, windows, created, attached, is_helm}]}` (all tmux sessions, not just `hx-*`) |
+| GET | `/box/tmux/{name}/capture?lines=200` | | `{name, text}` last N lines of the pane |
+| POST | `/box/tmux/{name}/send` | `{keys}` | `{ok}` sends keys + Enter |
+| DELETE | `/box/tmux/{name}` | | `{ok}` kills the tmux session |
+| GET | `/box/services` | | `{"services":[{name, active, enabled}]}` for the watched set |
+| POST | `/box/services/{name}/{action}` | | `{ok, active, error?}`; action in `start`/`stop`/`restart` |
+| GET | `/box/claude-sessions?limit=40` | | `{"sessions":[{id, project, path, modified, size_kb, summary}]}` recent Claude Code sessions |
+| GET | `/box/claude-sessions/{project}/{id}?tail=60` | | `{id, project, turns:[{role, text, ts}]}` readable transcript tail |
+| GET | `/box/burst` | | `{"models":[{model, target, held, detail}]}` GPU-burst container state |
+| POST | `/box/burst/{model}/{action}` | | `{ok, detail}`; model in `glm`/`dsv`, action in `warm`/`status`/`release` |
+| POST | `/box/shell` | `{cmd, cwd?, timeout?}` | `{ok, exit, output}` arbitrary `bash -lc` on the box |
 
 ## WebSocket
 `GET /sessions/{id}/stream?after=N` upgrades. Server first replays events with
