@@ -180,7 +180,7 @@ struct APIClient {
     }
 
     func boxShell(_ cmd: String, cwd: String? = nil, timeout: Int = 120) async throws -> ShellResult {
-        var body: [String: JSONValue] = ["cmd": .string(cmd), "timeout": .double(Double(timeout))]
+        var body: [String: JSONValue] = ["cmd": .string(cmd), "timeout": .number(Double(timeout))]
         if let cwd, !cwd.isEmpty { body["cwd"] = .string(cwd) }
         var req = try makeRequest("POST", "/box/shell", query: [], auth: true)
         req.timeoutInterval = Double(timeout) + 15
