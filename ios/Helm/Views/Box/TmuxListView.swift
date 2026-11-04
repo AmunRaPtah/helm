@@ -1,15 +1,40 @@
 import SwiftUI
 
 /// All tmux sessions on the box. Tap to view the live pane; swipe to kill.
+/// The top section controls helmd's reaper, which kills idle sessions on its own.
 struct TmuxListView: View {
     @Environment(AppStore.self) private var store
     @State private var sessions: [TmuxSession] = []
+    @State private var reaper: ReaperState?
     @State private var error: String?
 
     var body: some View {
         List {
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+            }
+            if let r = reaper {
+                Section {
+                    Toggle("Auto-kill idle sessions", isOn: Binding(
+                        get: { r.enabled },
+                        set: { v in saveReaper(enabled: v) }))
+                    Stepper(value: Binding(
+                        get: { r.idleHours },
+                        set: { v in saveReaper(idleHours: v) }), in: 1...336, step: 1) {
+                        Text("After \(Int(r.idleHours))h idle")
+                    }
+                    Toggle("Include non-Helm sessions", isOn: Binding(
+                        get: { r.includeNonHelm },
+                        set: { v in saveReaper(includeNonHelm: v) }))
+                    Button(role: .destructive) { runReaper() } label: {
+                        Text(r.candidates.isEmpty ? "No stale sessions" : "Kill \(r.candidates.count) stale now")
+                    }
+                    .disabled(r.candidates.isEmpty)
+                } header: {
+                    Text("Auto-kill")
+                } footer: {
+                    Text("Checked every 15 min. Attached sessions and \"main\" are never killed. Killed chats can be resumed.")
+                }
             }
             ForEach(sessions) { s in
                 NavigationLink {
@@ -20,7 +45,7 @@ struct TmuxListView: View {
                             .foregroundStyle(s.isHelm ? Color.accentColor : .secondary)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(s.name).font(.subheadline.weight(.medium)).monospaced()
-                            Text("\(s.windows) window\(s.windows == 1 ? "" : "s")\(s.attached ? " · attached" : "")")
+                            Text("\(s.windows) window\(s.windows == 1 ? "" : "s")\(s.attached ? " · attached" : "")\(s.idleLabel.map { " · " + $0 } ?? "")")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -37,8 +62,34 @@ struct TmuxListView: View {
     }
 
     private func load() async {
-        do { sessions = try await store.api.boxTmux(); error = nil }
+        do {
+            sessions = try await store.api.boxTmux()
+            reaper = try await store.api.boxReaper()
+            error = nil
+        }
         catch { self.error = APIClient.describe(error) }
+    }
+
+    private func saveReaper(enabled: Bool? = nil, idleHours: Double? = nil, includeNonHelm: Bool? = nil) {
+        guard let r = reaper else { return }
+        Task {
+            Haptics.tap()
+            do {
+                reaper = try await store.api.boxReaperSet(
+                    enabled: enabled ?? r.enabled,
+                    idleHours: idleHours ?? r.idleHours,
+                    includeNonHelm: includeNonHelm ?? r.includeNonHelm)
+            } catch { self.error = APIClient.describe(error) }
+        }
+    }
+
+    private func runReaper() {
+        Task {
+            Haptics.tap()
+            do { reaper = try await store.api.boxReaperRun() }
+            catch { self.error = APIClient.describe(error) }
+            await load()
+        }
     }
 
     private func kill(_ name: String) {

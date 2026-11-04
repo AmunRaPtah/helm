@@ -49,6 +49,7 @@ struct TmuxSession: Identifiable {
     var created: Double?
     var attached: Bool
     var isHelm: Bool
+    var idleHours: Double?
     var id: String { name }
 
     init?(json j: JSONValue) {
@@ -58,6 +59,33 @@ struct TmuxSession: Identifiable {
         created = j["created"]?.double
         attached = j["attached"]?.bool ?? false
         isHelm = j["is_helm"]?.bool ?? n.hasPrefix("hx-")
+        idleHours = j["idle_hours"]?.double
+    }
+
+    var idleLabel: String? {
+        guard let h = idleHours else { return nil }
+        if h < 1 { return "active <1h ago" }
+        return h < 48 ? "idle \(Int(h))h" : "idle \(Int(h / 24))d"
+    }
+}
+
+/// Server-side auto-kill of idle tmux sessions (helmd reaper).
+struct ReaperState {
+    var enabled: Bool
+    var idleHours: Double
+    var includeNonHelm: Bool
+    var candidates: [String]
+
+    init(json j: JSONValue) {
+        let c = j["config"]
+        enabled = c?["enabled"]?.bool ?? true
+        idleHours = c?["idle_hours"]?.double ?? 24
+        includeNonHelm = c?["include_non_helm"]?.bool ?? false
+        if case .array(let a)? = j["candidates"] {
+            candidates = a.compactMap { $0["name"]?.string }
+        } else {
+            candidates = []
+        }
     }
 }
 

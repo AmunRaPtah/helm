@@ -149,6 +149,22 @@ struct APIClient {
         _ = try await request("DELETE", "/box/tmux/\(encode(name))")
     }
 
+    func boxReaper() async throws -> ReaperState {
+        ReaperState(json: try await request("GET", "/box/reaper"))
+    }
+
+    func boxReaperSet(enabled: Bool, idleHours: Double, includeNonHelm: Bool) async throws -> ReaperState {
+        ReaperState(json: try await request("PUT", "/box/reaper", body: .object([
+            "enabled": .bool(enabled),
+            "idle_hours": .number(idleHours),
+            "include_non_helm": .bool(includeNonHelm),
+        ])))
+    }
+
+    func boxReaperRun() async throws -> ReaperState {
+        ReaperState(json: try await request("POST", "/box/reaper/run"))
+    }
+
     func boxServices() async throws -> [BoxService] {
         list(try await request("GET", "/box/services"), key: "services").compactMap(BoxService.init(json:))
     }

@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from pydantic import BaseModel
 
-from . import adapters, box, config, sessionio
+from . import adapters, box, config, reaper, sessionio
 from .harnesses import get_harnesses
 from .idgen import new_id
 
@@ -64,6 +64,7 @@ def tmux_start_runner(sid: str, cwd: str) -> None:
 def on_startup():
     config.ensure_dirs()
     config.load_token()  # fail fast if missing
+    reaper.start_background()
     # Reconcile: any session claiming to be alive but with no tmux session
     # behind it (e.g. the box rebooted) is marked exited.
     if not config.SESSIONS_DIR.exists():
@@ -307,7 +308,32 @@ def box_system(authorization: Optional[str] = Header(None)):
 @app.get("/box/tmux")
 def box_tmux(authorization: Optional[str] = Header(None)):
     check_auth(authorization)
-    return {"sessions": box.tmux_sessions()}
+    return {"sessions": reaper.sessions_with_idle()}
+
+
+class ReaperConfig(BaseModel):
+    enabled: Optional[bool] = None
+    idle_hours: Optional[float] = None
+    include_non_helm: Optional[bool] = None
+
+
+@app.get("/box/reaper")
+def box_reaper(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return reaper.status()
+
+
+@app.put("/box/reaper")
+def box_reaper_set(body: ReaperConfig, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    reaper.save(**{k: v for k, v in body.dict().items() if v is not None})
+    return reaper.status()
+
+
+@app.post("/box/reaper/run")
+def box_reaper_run(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"killed": reaper.run_once(), **reaper.status()}
 
 
 @app.get("/box/tmux/{name}/capture")
