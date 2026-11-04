@@ -108,7 +108,7 @@ that only emits final `assistant` events is valid.
 | GET | `/sessions/{id}/commands` | | `{"commands":[name],"shell":true}`, slash commands for `/` completion |
 | POST | `/sessions/{id}/interrupt` | | `{"ok":true}` (SIGINT to current turn) |
 | POST | `/sessions/{id}/resume` | | `Session` (restart runner in tmux for an exited session, resuming native_session_id) |
-| POST | `/upload` | multipart `file`, form `session_id` | `{"path": "/root/.helm/sessions/<id>/uploads/<name>"}` |
+| POST | `/upload` | multipart `file`, form `session_id` | `{"path": "/root/.helm/sessions/<id>/uploads/<name>"}` (an existing name gets a `-1`, `-2` suffix) |
 | GET | `/dirs?path=/root/projects` | | `{"path", "entries":[{"name","is_dir"}]}` (dirs only, for cwd picker) |
 | GET | `/quota` | | raw JSON from `quota-axi --json` if available, else `{}` |
 
@@ -134,6 +134,7 @@ bounded (shell/tmux/transcript capped at ~20 KB).
 | GET | `/box/burst` | | `{"models":[{model, target, held, detail}]}` GPU-burst container state |
 | POST | `/box/burst/{model}/{action}` | | `{ok, detail}`; model in `glm`/`dsv`, action in `warm`/`status`/`release` |
 | POST | `/box/shell` | `{cmd, cwd?, timeout?}` | `{ok, exit, output}` arbitrary `bash -lc` on the box |
+| POST | `/box/upload` | multipart `file`, form `dir?` (absolute, default `/root/uploads`, created if missing) | `{path, size}`; never overwrites, a clash gets a `-1` suffix |
 
 ## WebSocket
 `GET /sessions/{id}/stream?after=N` upgrades. Server first replays events with

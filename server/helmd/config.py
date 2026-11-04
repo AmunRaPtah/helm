@@ -4,6 +4,8 @@ from pathlib import Path
 HELM_HOME = Path(os.environ.get("HELM_HOME", Path.home() / ".helm"))
 SESSIONS_DIR = HELM_HOME / "sessions"
 TOKEN_FILE = HELM_HOME / "token"
+# Default target for files sent from the phone outside a chat (POST /box/upload).
+BOX_UPLOADS_DIR = "/root/uploads"
 
 BIND_HOST = "10.66.66.1"
 BIND_PORT = 3340

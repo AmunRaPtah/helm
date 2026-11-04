@@ -39,12 +39,17 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes:
               - com.rsa.pkcs-12
+          - CFBundleTypeName: Any file
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.item
+              - public.data
         LSSupportsOpeningDocumentsInPlace: false
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: Helm connects to your helmd server over your private network.
-        NSPhotoLibraryUsageDescription: Attach images to messages you send to a harness.
+        NSPhotoLibraryUsageDescription: Attach images to messages, or upload photos and videos to your box.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.zyco.helm

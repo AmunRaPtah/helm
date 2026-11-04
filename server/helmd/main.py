@@ -259,13 +259,22 @@ async def upload(file: UploadFile = File(...), session_id: str = Form(...),
                   authorization: Optional[str] = Header(None)):
     check_auth(authorization)
     _require_session(session_id)
-    udir = config.uploads_dir(session_id)
-    udir.mkdir(parents=True, exist_ok=True)
-    name = Path(file.filename).name
-    dest = udir / name
-    data = await file.read()
-    dest.write_bytes(data)
+    dest = await _save_upload(file, config.uploads_dir(session_id))
     return {"path": str(dest)}
+
+
+async def _save_upload(file: UploadFile, udir: Path) -> Path:
+    """Streams an upload into udir without overwriting: a clash becomes name-1.ext."""
+    udir.mkdir(parents=True, exist_ok=True)
+    name = Path(file.filename or "").name or f"upload-{int(time.time())}"
+    stem, suffix = Path(name).stem, Path(name).suffix
+    dest, n = udir / name, 1
+    while dest.exists():
+        dest, n = udir / f"{stem}-{n}{suffix}", n + 1
+    with dest.open("wb") as out:
+        while chunk := await file.read(1 << 20):
+            out.write(chunk)
+    return dest
 
 
 @app.get("/dirs")
@@ -406,6 +415,19 @@ class ShellBody(BaseModel):
 def box_shell(body: ShellBody, authorization: Optional[str] = Header(None)):
     check_auth(authorization)
     return box.run_shell(body.cmd, body.cwd, body.timeout)
+
+
+@app.post("/box/upload")
+async def box_upload(file: UploadFile = File(...), dir: str = Form(config.BOX_UPLOADS_DIR),
+                     authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    udir = Path(dir).expanduser()
+    if not udir.is_absolute():
+        raise HTTPException(400, "dir must be an absolute path")
+    if udir.exists() and not udir.is_dir():
+        raise HTTPException(400, "not a directory")
+    dest = await _save_upload(file, udir)
+    return {"path": str(dest), "size": dest.stat().st_size}
 
 
 # ---------- WebSocket ----------

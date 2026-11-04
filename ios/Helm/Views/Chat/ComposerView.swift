@@ -1,11 +1,14 @@
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ComposerView: View {
     @Bindable var model: ChatModel
     let accent: Color
 
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var showPhotos = false
+    @State private var showFiles = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -22,7 +25,10 @@ struct ComposerView: View {
                 }
             }
             HStack(alignment: .bottom, spacing: 8) {
-                PhotosPicker(selection: $photoItems, maxSelectionCount: 4, matching: .images) {
+                Menu {
+                    Button { showPhotos = true } label: { Label("Photos", systemImage: "photo.on.rectangle") }
+                    Button { showFiles = true } label: { Label("Files", systemImage: "folder") }
+                } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 17, weight: .semibold))
                         .frame(width: 36, height: 36)
@@ -30,7 +36,7 @@ struct ComposerView: View {
                         .foregroundStyle(.secondary)
                 }
                 .disabled(model.isExited)
-                .accessibilityLabel("Attach image")
+                .accessibilityLabel("Attach")
 
                 TextField(placeholder, text: $model.draft, axis: .vertical)
                     .lineLimit(1...8)
@@ -49,6 +55,18 @@ struct ComposerView: View {
         .padding(.top, 8)
         .padding(.bottom, 8)
         .background(.bar)
+        .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 4, matching: .images)
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                for url in urls {
+                    guard let f = PickedFile.load(url) else { model.banner = "Couldn't read \(url.lastPathComponent)."; continue }
+                    Task { await model.upload(data: f.data, filename: f.filename, mimeType: f.mimeType) }
+                }
+            case .failure(let e):
+                model.banner = e.localizedDescription
+            }
+        }
         .onChange(of: photoItems) { _, items in
             guard !items.isEmpty else { return }
             photoItems = []
@@ -178,7 +196,7 @@ struct AttachmentChip: View {
             } else if attachment.error != nil {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
             } else {
-                Image(systemName: "photo")
+                Image(systemName: PickedFile.icon(for: attachment.filename))
             }
             Text(attachment.error ?? attachment.filename)
                 .lineLimit(1)

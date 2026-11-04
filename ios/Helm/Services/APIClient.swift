@@ -100,29 +100,49 @@ struct APIClient {
     }
 
     func upload(sessionId: String, data: Data, filename: String, mimeType: String) async throws -> String {
+        let v = try await multipart("/upload", fields: ["session_id": sessionId],
+                                    data: data, filename: filename, mimeType: mimeType)
+        guard let path = v["path"]?.string ?? v.string, !path.isEmpty else {
+            throw APIError.decoding("upload returned no path")
+        }
+        return path
+    }
+
+    /// Saves a file anywhere on the box (default /root/uploads); returns where it landed.
+    func uploadToBox(dir: String, data: Data, filename: String, mimeType: String) async throws -> String {
+        let v = try await multipart("/box/upload", fields: ["dir": dir],
+                                    data: data, filename: filename, mimeType: mimeType)
+        guard let path = v["path"]?.string, !path.isEmpty else {
+            throw APIError.decoding("upload returned no path")
+        }
+        return path
+    }
+
+    private func multipart(_ path: String, fields: [String: String], data: Data,
+                           filename: String, mimeType: String) async throws -> JSONValue {
         let boundary = "helm-\(UUID().uuidString)"
         var body = Data()
         func line(_ s: String) { body.append(Data((s + "\r\n").utf8)) }
+        for (name, value) in fields {
+            line("--\(boundary)")
+            line("Content-Disposition: form-data; name=\"\(name)\"")
+            line("")
+            line(value)
+        }
+        let safeName = filename.replacingOccurrences(of: "\"", with: "'")
         line("--\(boundary)")
-        line("Content-Disposition: form-data; name=\"session_id\"")
-        line("")
-        line(sessionId)
-        line("--\(boundary)")
-        line("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"")
+        line("Content-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"")
         line("Content-Type: \(mimeType)")
         line("")
         body.append(data)
         line("")
         line("--\(boundary)--")
 
-        var req = try makeRequest("POST", "/upload", query: [], auth: true)
+        var req = try makeRequest("POST", path, query: [], auth: true)
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 120
-        let v = try await perform(req, body: body)
-        guard let path = v["path"]?.string ?? v.string, !path.isEmpty else {
-            throw APIError.decoding("upload returned no path")
-        }
-        return path
+        // Documents can be tens of MB over a phone link; scale the timeout with size.
+        req.timeoutInterval = max(120, Double(data.count) / 100_000)
+        return try await perform(req, body: body)
     }
 
     // MARK: Box remote control
