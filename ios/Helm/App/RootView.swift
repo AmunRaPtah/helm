@@ -12,6 +12,8 @@ struct RootView: View {
                     .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
                 BoxView()
                     .tabItem { Label("Box", systemImage: "server.rack") }
+                FilesHomeView()
+                    .tabItem { Label("Files", systemImage: "folder") }
             }
             // Files shared into Helm from another app ("Open in Helm").
             .onChange(of: inbox.pending.count) { _, n in if n > 0 { showInbox = true } }

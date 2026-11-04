@@ -134,7 +134,13 @@ bounded (shell/tmux/transcript capped at ~20 KB).
 | GET | `/box/burst` | | `{"models":[{model, target, held, detail}]}` GPU-burst container state |
 | POST | `/box/burst/{model}/{action}` | | `{ok, detail}`; model in `glm`/`dsv`, action in `warm`/`status`/`release` |
 | POST | `/box/shell` | `{cmd, cwd?, timeout?}` | `{ok, exit, output}` arbitrary `bash -lc` on the box |
-| POST | `/box/upload` | multipart `file`, form `dir?` (absolute, default `/root/uploads`, created if missing) | `{path, size}`; never overwrites, a clash gets a `-1` suffix |
+| POST | `/box/upload` | multipart `file`, form `dir?` (absolute, default `/root/uploads`, created if missing), `rel?` (relative path under `dir` for folder uploads, subdirs created; `..` refused), `overwrite?` (default false) | `{path, size}`; streamed to a `.helmpart` temp then renamed; without `overwrite` a clash gets a `-1` suffix |
+| GET | `/box/fs/list?path=` | | `{path, parent, entries: [{name, is_dir, size, mtime, is_link}]}`, folders first |
+| GET | `/box/fs/tree?path=` | | `{root, name, files: [{rel, size}], dirs: [rel], total_size}` for a folder download; 413 above 20000 files |
+| GET | `/box/fs/download?path=` | | the file, or a folder as a streamed stored `.zip` (`Content-Disposition: filename*=UTF-8''<name>.zip`) |
+| POST | `/box/fs/mkdir` | `{path, unique?}` | `{path}`; `unique` turns an existing name into `name-1` instead of reusing it (folder uploads use this so they never merge) |
+| POST | `/box/fs/move` | `{src, dst}` | `{path}`; 409 if `dst` exists |
+| POST | `/box/fs/delete` | `{path}` | `{trashed}`; moved to `~/.helm/trash`, purged after 7 days; `/`, `$HOME` and top-level dirs refused |
 
 ## WebSocket
 `GET /sessions/{id}/stream?after=N` upgrades. Server first replays events with

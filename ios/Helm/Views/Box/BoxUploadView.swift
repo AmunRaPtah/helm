@@ -1,16 +1,19 @@
 import PhotosUI
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
 
-/// Sends files, documents and photos from the phone to a folder on the box.
+/// Sends files, folders and photos from the phone to a chosen folder on the box.
+/// Also where "Open in Helm" from another app lands.
 struct BoxUploadView: View {
     @Environment(AppStore.self) private var store
     @AppStorage("helm.uploadDir") private var dir = "/root/uploads"
     @State private var inbox = FileInbox.shared
-    @State private var uploads: [BoxUpload] = []
-    @State private var showFiles = false
+    @State private var transfers = Transfers.shared
+    @State private var started: Set<UUID> = []
+    @State private var importFolders = false
+    @State private var showImporter = false
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var error: String?
 
     var body: some View {
         List {
@@ -23,105 +26,95 @@ struct BoxUploadView: View {
                 }
             }
             Section {
-                Button { showFiles = true } label: { Label("Choose files", systemImage: "doc.badge.plus") }
-                PhotosPicker(selection: $photoItems, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
+                Button { importFolders = false; showImporter = true } label: { Label("Choose files", systemImage: "doc.badge.plus") }
+                Button { importFolders = true; showImporter = true } label: { Label("Choose a folder", systemImage: "folder.badge.plus") }
+                PhotosPicker(selection: $photoItems, maxSelectionCount: 50, matching: .any(of: [.images, .videos])) {
                     Label("Choose photos or videos", systemImage: "photo.on.rectangle")
                 }
             } footer: {
                 Text("Tip: in any app, Share \u{2192} Helm sends a file straight here. Existing files are never overwritten.")
             }
-            if !uploads.isEmpty {
+            if let error {
+                Text(error).font(.footnote).foregroundStyle(.red)
+            }
+            let mine = transfers.items.filter { started.contains($0.id) }
+            if !mine.isEmpty {
                 Section("Uploads") {
-                    ForEach(uploads) { u in row(u) }
+                    ForEach(mine) { t in row(t) }
                 }
             }
         }
         .navigationTitle("Upload to box")
         .navigationBarTitleDisplayMode(.inline)
-        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $showImporter,
+                      allowedContentTypes: importFolders ? [.folder] : [.item],
+                      allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result else { return }
-            for url in urls {
-                if let f = PickedFile.load(url) { send(f) }
-                else { uploads.insert(BoxUpload(filename: url.lastPathComponent, error: "Couldn't read file"), at: 0) }
-            }
+            send(urls, owned: false)
         }
         .onChange(of: photoItems) { _, items in
             guard !items.isEmpty else { return }
             photoItems = []
-            for item in items { Task { await sendPhoto(item) } }
+            Task { await sendPhotos(items) }
         }
         .task(id: inbox.pending.count) { drainInbox() }
     }
 
-    private func row(_ u: BoxUpload) -> some View {
+    private func row(_ t: Transfer) -> some View {
         HStack(spacing: 10) {
-            if u.isUploading {
-                ProgressView().controlSize(.small)
-            } else if u.error != nil {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-            } else {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            switch t.state {
+            case .running: ProgressView().controlSize(.small)
+            case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            case .cancelled: Image(systemName: "xmark.circle").foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(u.filename).font(.subheadline).lineLimit(1)
-                Text(u.error ?? u.path ?? "Uploading \(ByteCountFormatter.string(fromByteCount: Int64(u.size), countStyle: .file))\u{2026}")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(u.error == nil ? Color.secondary : Color.red)
-                    .lineLimit(2)
-                    .truncationMode(.head)
+                Text(t.name).font(.subheadline).lineLimit(1)
+                Group {
+                    switch t.state {
+                    case .running:
+                        Text(t.fraction.map { "\(Int($0 * 100))%" + (t.isFolder ? " \u{00B7} \(t.doneFiles)/\(t.totalFiles) files" : "") } ?? "Uploading\u{2026}")
+                    case .done: Text(t.remotePath ?? "")
+                    case .failed(let m): Text(m)
+                    case .cancelled: Text("Cancelled")
+                    }
+                }
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.head)
             }
         }
         .contextMenu {
-            if let p = u.path {
+            if let p = t.remotePath {
                 Button { UIPasteboard.general.string = p } label: { Label("Copy path", systemImage: "doc.on.doc") }
             }
+            if t.isRunning {
+                Button(role: .destructive) { transfers.cancel(t) } label: { Label("Cancel", systemImage: "xmark") }
+            }
         }
+    }
+
+    private func send(_ urls: [URL], owned: Bool) {
+        guard !urls.isEmpty else { return }
+        let before = Set(transfers.items.map(\.id))
+        transfers.upload(urls, to: dir, api: store.api, ownedTemp: owned)
+        started.formUnion(transfers.items.map(\.id).filter { !before.contains($0) })
     }
 
     private func drainInbox() {
-        let files = inbox.pending
-        guard !files.isEmpty else { return }
+        let urls = inbox.pending
+        guard !urls.isEmpty else { return }
         inbox.pending = []
-        files.forEach(send)
+        send(urls, owned: true)
     }
 
-    private func sendPhoto(_ item: PhotosPickerItem) async {
-        guard let data = try? await item.loadTransferable(type: Data.self) else {
-            uploads.insert(BoxUpload(filename: "photo", error: "Couldn't load from Photos"), at: 0)
-            return
+    private func sendPhotos(_ items: [PhotosPickerItem]) async {
+        var urls: [URL] = []
+        for item in items {
+            if let f = try? await item.loadTransferable(type: PhotoFile.self) { urls.append(f.url) }
         }
-        let type = item.supportedContentTypes.first
-        let ext = type?.preferredFilenameExtension ?? "bin"
-        let stamp = Int(Date().timeIntervalSince1970 * 1000)
-        send(PickedFile(data: data, filename: "photo-\(stamp).\(ext)",
-                        mimeType: type?.preferredMIMEType ?? "application/octet-stream"))
+        error = urls.count < items.count ? "\(items.count - urls.count) item(s) couldn't be loaded from Photos" : nil
+        send(urls, owned: true)
     }
-
-    private func send(_ f: PickedFile) {
-        let u = BoxUpload(filename: f.filename, size: f.data.count)
-        uploads.insert(u, at: 0)
-        let target = dir
-        Task {
-            do {
-                let path = try await store.api.uploadToBox(dir: target, data: f.data, filename: f.filename, mimeType: f.mimeType)
-                update(u.id) { $0.path = path }
-                Haptics.tap()
-            } catch {
-                update(u.id) { $0.error = APIClient.describe(error) }
-            }
-        }
-    }
-
-    private func update(_ id: UUID, _ change: (inout BoxUpload) -> Void) {
-        if let i = uploads.firstIndex(where: { $0.id == id }) { change(&uploads[i]) }
-    }
-}
-
-struct BoxUpload: Identifiable {
-    let id = UUID()
-    var filename: String
-    var size = 0
-    var path: String?
-    var error: String?
-    var isUploading: Bool { path == nil && error == nil }
 }

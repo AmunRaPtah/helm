@@ -6,15 +6,16 @@ import shutil
 import signal
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from pydantic import BaseModel
 
-from . import adapters, box, config, reaper, sessionio
+from . import adapters, box, config, files, reaper, sessionio
 from .harnesses import get_harnesses
 from .idgen import new_id
 
@@ -419,15 +420,89 @@ def box_shell(body: ShellBody, authorization: Optional[str] = Header(None)):
 
 @app.post("/box/upload")
 async def box_upload(file: UploadFile = File(...), dir: str = Form(config.BOX_UPLOADS_DIR),
+                     rel: Optional[str] = Form(None), overwrite: bool = Form(False),
                      authorization: Optional[str] = Header(None)):
+    """rel (e.g. "Folder/sub/a.pdf") rebuilds a folder tree under dir, one file per request."""
     check_auth(authorization)
-    udir = Path(dir).expanduser()
-    if not udir.is_absolute():
-        raise HTTPException(400, "dir must be an absolute path")
-    if udir.exists() and not udir.is_dir():
-        raise HTTPException(400, "not a directory")
-    dest = await _save_upload(file, udir)
+    dest = _fs(files.upload_target, dir, file.filename, rel, overwrite)
+    part = dest.with_name(f".{dest.name}.helmpart")
+    try:
+        with part.open("wb") as out:
+            while chunk := await file.read(1 << 20):
+                out.write(chunk)
+        os.replace(part, dest)
+    finally:
+        part.unlink(missing_ok=True)
     return {"path": str(dest), "size": dest.stat().st_size}
+
+
+# ---------- file manager ----------
+
+def _fs(fn, *args):
+    try:
+        return fn(*args)
+    except files.FsError as e:
+        raise HTTPException(e.status, e.msg)
+    except PermissionError:
+        raise HTTPException(403, "permission denied")
+    except FileNotFoundError:
+        raise HTTPException(404, "not found")
+
+
+@app.get("/box/fs/list")
+def fs_list(path: str = Query(str(Path.home())), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return _fs(files.list_dir, path)
+
+
+@app.get("/box/fs/tree")
+def fs_tree(path: str = Query(...), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return _fs(files.tree, path)
+
+
+@app.get("/box/fs/download")
+def fs_download(path: str = Query(...), authorization: Optional[str] = Header(None)):
+    """A file as-is; a directory as a streamed zip."""
+    check_auth(authorization)
+    p = _fs(files.abs_path, path)
+    if p.is_file():
+        return FileResponse(p, filename=p.name, media_type="application/octet-stream")
+    if p.is_dir():
+        quoted = urllib.parse.quote(p.name + ".zip")
+        return StreamingResponse(files.zip_stream(str(p)), media_type="application/zip",
+                                 headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})
+    raise HTTPException(404, "not found")
+
+
+class FsPath(BaseModel):
+    path: str
+    unique: bool = False
+
+
+class FsMove(BaseModel):
+    src: str
+    dst: str
+
+
+@app.post("/box/fs/mkdir")
+def fs_mkdir(body: FsPath, authorization: Optional[str] = Header(None)):
+    """unique=true returns a fresh name (Folder-1) instead of merging into an existing dir."""
+    check_auth(authorization)
+    return {"path": str(_fs(files.mkdir, body.path, body.unique))}
+
+
+@app.post("/box/fs/move")
+def fs_move(body: FsMove, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"path": str(_fs(files.rename, body.src, body.dst))}
+
+
+@app.post("/box/fs/delete")
+def fs_delete(body: FsPath, authorization: Optional[str] = Header(None)):
+    """Moves to ~/.helm/trash (purged after a week), never unlinks directly."""
+    check_auth(authorization)
+    return {"trashed": str(_fs(files.trash, body.path))}
 
 
 # ---------- WebSocket ----------

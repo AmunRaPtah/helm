@@ -126,8 +126,8 @@ struct BoxView: View {
             NavigationLink { ShellConsoleView() } label: {
                 Label("Shell console", systemImage: "terminal")
             }
-            NavigationLink { BoxUploadView() } label: {
-                Label("Upload files", systemImage: "square.and.arrow.up")
+            NavigationLink { FileBrowserView(path: "/root") } label: {
+                Label("Files", systemImage: "folder")
             }
         }
     }

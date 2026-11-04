@@ -44,7 +44,8 @@ targets:
             LSItemContentTypes:
               - public.item
               - public.data
-        LSSupportsOpeningDocumentsInPlace: false
+        LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true

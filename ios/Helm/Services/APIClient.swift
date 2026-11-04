@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 /// Thin async/await REST client for helmd (PROTOCOL.md "REST").
 struct APIClient {
@@ -229,6 +230,120 @@ struct APIClient {
         s.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? s
     }
 
+    // MARK: File manager
+
+    func fsList(_ path: String) async throws -> FsListing {
+        FsListing(json: try await request("GET", "/box/fs/list", query: [URLQueryItem(name: "path", value: path)]))
+    }
+
+    func fsTree(_ path: String) async throws -> FsTree {
+        FsTree(json: try await request("GET", "/box/fs/tree", query: [URLQueryItem(name: "path", value: path)]))
+    }
+
+    /// unique: a clash returns "Name-1" rather than reusing the existing folder.
+    func fsMkdir(_ path: String, unique: Bool = false) async throws -> String {
+        let v = try await request("POST", "/box/fs/mkdir",
+                                  body: .object(["path": .string(path), "unique": .bool(unique)]))
+        return v["path"]?.string ?? path
+    }
+
+    func fsMove(_ src: String, to dst: String) async throws -> String {
+        let v = try await request("POST", "/box/fs/move", body: .object(["src": .string(src), "dst": .string(dst)]))
+        return v["path"]?.string ?? dst
+    }
+
+    func fsDelete(_ path: String) async throws {
+        _ = try await request("POST", "/box/fs/delete", body: .object(["path": .string(path)]))
+    }
+
+    /// Downloads a box file (or a folder as .zip) to a temp file the caller must move.
+    func fsDownload(_ path: String) async throws -> URL {
+        var req = try makeRequest("GET", "/box/fs/download", query: [URLQueryItem(name: "path", value: path)], auth: true)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 300
+        let (tmp, resp): (URL, URLResponse)
+        do {
+            (tmp, resp) = try await Self.session.download(for: req)
+        } catch {
+            throw Self.transportError(error)
+        }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            let data = (try? Data(contentsOf: tmp)) ?? Data()
+            try? FileManager.default.removeItem(at: tmp)
+            throw Self.httpError(code, data)
+        }
+        // The system deletes its temp file once this returns, so claim it now.
+        let mine = FileManager.default.temporaryDirectory.appendingPathComponent("dl-\(UUID().uuidString)")
+        try FileManager.default.moveItem(at: tmp, to: mine)
+        return mine
+    }
+
+    /// Streams a local file to the box from disk (never loaded into memory).
+    /// rel ("Folder/sub/a.pdf") rebuilds folder structure under dir.
+    func fsUpload(file: URL, filename: String, dir: String, rel: String? = nil,
+                  progress: (@Sendable (Int64) -> Void)? = nil) async throws -> String {
+        let boundary = "helm-\(UUID().uuidString)"
+        let body = FileManager.default.temporaryDirectory.appendingPathComponent("up-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: body) }
+        var fields = ["dir": dir]
+        if let rel { fields["rel"] = rel }
+        let size = try Self.writeMultipart(to: body, boundary: boundary, fields: fields, file: file, filename: filename)
+
+        var req = try makeRequest("POST", "/box/upload", query: [], auth: true)
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = max(120, Double(size) / 100_000)
+        let (data, resp): (Data, URLResponse)
+        do {
+            (data, resp) = try await Self.session.upload(for: req, fromFile: body,
+                                                         delegate: progress.map { UploadProgress($0) as URLSessionTaskDelegate })
+        } catch {
+            throw Self.transportError(error)
+        }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else { throw Self.httpError(code, data) }
+        guard let path = JSONValue.parse(data)?["path"]?.string else {
+            throw APIError.decoding("upload returned no path")
+        }
+        return path
+    }
+
+    private static func writeMultipart(to out: URL, boundary: String, fields: [String: String],
+                                       file: URL, filename: String) throws -> Int64 {
+        FileManager.default.createFile(atPath: out.path, contents: nil)
+        let w = try FileHandle(forWritingTo: out)
+        defer { try? w.close() }
+        var head = ""
+        for (k, v) in fields {
+            head += "--\(boundary)\r\nContent-Disposition: form-data; name=\"\(k)\"\r\n\r\n\(v)\r\n"
+        }
+        let safe = filename.replacingOccurrences(of: "\"", with: "'").replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+        let mime = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        head += "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safe)\"\r\n"
+        head += "Content-Type: \(mime)\r\n\r\n"
+        try w.write(contentsOf: Data(head.utf8))
+        let r = try FileHandle(forReadingFrom: file)
+        defer { try? r.close() }
+        while let chunk = try r.read(upToCount: 1 << 20), !chunk.isEmpty {
+            try w.write(contentsOf: chunk)
+        }
+        try w.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
+        return Int64(try w.offset())
+    }
+
+    private static func transportError(_ error: Error) -> Error {
+        if error is CancellationError { return error }
+        if let e = error as? URLError, e.code == .cancelled { return CancellationError() }
+        return APIError.transport(describe(error))
+    }
+
+    private static func httpError(_ code: Int, _ data: Data) -> Error {
+        let msg = JSONValue.parse(data).flatMap { $0["detail"]?.string ?? $0["error"]?.string }
+            ?? String(data: data, encoding: .utf8) ?? ""
+        return APIError.http(code, msg)
+    }
+
     // MARK: Plumbing
 
     /// Accepts either a bare array or an object wrapping it (tolerant of either shape).
@@ -310,5 +425,21 @@ struct APIClient {
             }
         }
         return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+}
+
+/// Per-task delegate reporting bytes sent; client-cert challenges go to the shared handler.
+private final class UploadProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let onSent: @Sendable (Int64) -> Void
+    init(_ onSent: @escaping @Sendable (Int64) -> Void) { self.onSent = onSent }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        onSent(totalBytesSent)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        ClientCertDelegate.shared.urlSession(session, task: task, didReceive: challenge, completionHandler: completionHandler)
     }
 }
