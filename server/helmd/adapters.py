@@ -84,6 +84,18 @@ BURST_LAUNCHERS = {
 }
 SUKUNA_LAUNCHER = "/root/.local/bin/sukuna"
 
+# Model-selectable launchers. Both end in `exec /usr/local/bin/claude ... "$@"`
+# and take the model from an env var rather than --model (they also map
+# ANTHROPIC_DEFAULT_*_MODEL onto it, so --model would be overridden anyway).
+# venice: `v` (Venice via LiteLLM :8789, CLAUDE_CONFIG_DIR=~/.claude-venice),
+#   model in V_MODEL.
+# api: claude-burst against LiteLLM :4000, model in BURST_MODEL; only the
+#   non-burst ids (deepseek-*, free-*, worker-*, kbench-*) are offered here.
+VENICE_LAUNCHER = "/usr/local/bin/v"
+VENICE_DEFAULT_MODEL = "abliteration-abliterated-model-large-v2"
+API_LAUNCHER = "/root/.local/bin/claude-burst"
+API_DEFAULT_MODEL = "deepseek-v4-flash"
+
 
 def _sandbox_env():
     return {"IS_SANDBOX": "1"} if os.geteuid() == 0 else {}
@@ -109,6 +121,26 @@ def claude_cmd(meta):
         if meta.get("native_session_id"):
             cmd += ["--resume", meta["native_session_id"]]
         return cmd, _sandbox_env()
+
+    if h in ("venice", "api"):
+        if h == "venice":
+            launcher = VENICE_LAUNCHER
+            env = {"V_MODEL": meta.get("model") or VENICE_DEFAULT_MODEL}
+        else:
+            launcher = API_LAUNCHER
+            model = meta.get("model") or API_DEFAULT_MODEL
+            env = {"BURST_MODEL": model}
+            if model.startswith("kbench-"):
+                # The Kaggle model proxy rejects Claude Code's attribution
+                # header (same as alfred-brain's proxy route).
+                env["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"
+        cmd = [launcher] + _STREAM_FLAGS + [
+            "--permission-mode",
+            PERMISSION_MAP_CLAUDE.get(meta["permission"], "bypassPermissions")]
+        if meta.get("native_session_id"):
+            cmd += ["--resume", meta["native_session_id"]]
+        env.update(_sandbox_env())
+        return cmd, env
 
     exe = meta["harness"]
     if exe == "claude" and os.access(CLAUDE_WRAPPER, os.X_OK):
@@ -355,4 +387,4 @@ def codex_parse(obj):
     return events, native_id
 
 
-LONG_LIVED = {"claude", "ds", "cc", "agy", "glm", "dsv", "sukuna"}
+LONG_LIVED = {"claude", "ds", "cc", "agy", "glm", "dsv", "sukuna", "venice", "api"}

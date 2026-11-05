@@ -94,7 +94,9 @@ struct NewSessionSheet: View {
                    let first = store.harnesses.first(where: { $0.available }) {
                     harnessId = first.id
                 }
+                resetModel()
             }
+            .onChange(of: harnessId) { _, _ in resetModel() }
         }
         .presentationDragIndicator(.visible)
     }
@@ -110,6 +112,17 @@ struct NewSessionSheet: View {
             TextField("Model (optional)", text: $model)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+        }
+    }
+
+    /// A model chosen for one harness is meaningless for another, so switching
+    /// harness drops it and preselects the new harness's default_model (when it
+    /// is one of the picker's entries), else the "Default" row.
+    private func resetModel() {
+        if let h = harness, let d = h.defaultModel, h.models.contains(d) {
+            model = d
+        } else {
+            model = ""
         }
     }
 

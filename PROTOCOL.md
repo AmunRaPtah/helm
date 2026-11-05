@@ -51,7 +51,7 @@ human-readable transcript to the pane so `tmux attach -t hx-<id>` works.
   "supports_profiles": false, "profiles": [], "available": true,
   "models": [], "default_model": null, "note": null }
 ```
-v1 harness ids: `claude`, `ds`, `cc`, `agy`, `codex`. `codex` has
+v1 harness ids: `claude`, `ds`, `cc`, `agy`, `codex` (later additions below). `codex` has
 `supports_profiles: true` and `profiles` = cx profile names (from `cx ls`).
 `dsh` is listed with `available: false, note: "phase 2"`.
 
@@ -64,6 +64,23 @@ flags to the launcher rather than reimplementing its env):
 - `dsv`: DeepSeek-V4.1 abliterated on Modal GPU burst (`/root/.local/bin/dsv`).
 - `sukuna`: uncensored Venice model via the local LiteLLM proxy
   (`/root/.local/bin/sukuna`), offensive-security profile, no refusals.
+- `venice`: any Venice model via `/usr/local/bin/v` (LiteLLM :8789,
+  `CLAUDE_CONFIG_DIR=~/.claude-venice`). `models` comes from `v --models`
+  (cached in `~/.helm/models-venice.json`, refreshed at most hourly, static
+  fallback); the chosen model is passed as `V_MODEL` in the launcher env.
+  `default_model` = `abliteration-abliterated-model-large-v2`. Paid per turn.
+- `api`: API/subscription models behind LiteLLM :4000 via
+  `/root/.local/bin/claude-burst` with `BURST_MODEL=<model>`. `models` = the
+  `/v1/models` ids minus `burst-*` (GPU harnesses), `pardalos-*`, `local-*`
+  (cached in `~/.helm/models-api.json`, hourly). `kbench-*` models also get
+  `CLAUDE_CODE_ATTRIBUTION_HEADER=0`. `default_model` = `deepseek-v4-flash`.
+
+Model selection: a harness with a non-empty `models` list honours
+`Session.model` (`null`/empty = `default_model`, else the harness default):
+`claude` and `agy` via `--model`, `codex` via `-m` (list from
+`~/.codex/models_cache.json`, default from `~/.codex/config.toml`), `venice`
+and `api` via the env vars above. Harnesses with `models: []` (ds, cc, glm,
+dsv, sukuna) have the model fixed by their launcher.
 
 ## Event stream
 Events are append-only, numbered by `seq` (1-based, per session). Each line in
