@@ -193,12 +193,27 @@ async def post_message(sid: str, request: Request, authorization: Optional[str] 
     check_auth(authorization)
     meta = _require_session(sid)
     body = await request.json()
-    ok = await asyncio.get_event_loop().run_in_executor(
-        None, sessionio.write_inbox, sid, _message_op(body))
+    loop = asyncio.get_event_loop()
+    revived = await loop.run_in_executor(None, _ensure_runner, sid, meta)
+    ok = await loop.run_in_executor(
+        None, sessionio.write_inbox, sid, _message_op(body), 30.0 if revived else 12.0)
     if not ok:
         raise HTTPException(503, "runner not accepting input")
     # Messages sent mid-turn are queued by the runner, not rejected.
     return {"ok": True, "queued": meta.get("state") == "running" or bool(meta.get("queue"))}
+
+
+def _ensure_runner(sid: str, meta: dict) -> bool:
+    """If the chat's tmux runner is gone (tmux server restart, reaper, crash),
+    restart it so the message is delivered instead of timing out with 503.
+    Returns True when a runner was (re)started."""
+    if tmux_has_session(f"hx-{sid}"):
+        return False
+    sessionio.append_event(sid, {"type": "status", "state": "starting",
+                                  "detail": "runner was not running; restarted on send"})
+    sessionio.update_meta(sid, state="starting")
+    tmux_start_runner(sid, meta["cwd"])
+    return True
 
 
 def _message_op(body: dict) -> dict:
