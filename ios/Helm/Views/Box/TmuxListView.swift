@@ -162,22 +162,36 @@ struct TmuxCaptureView: View {
     @State private var keys = ""
     @State private var error: String?
     @State private var autoRefresh = true
+    @State private var follower = BottomFollower()
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
-                ScrollView {
-                    Text(text.isEmpty ? "…" : text)
-                        .font(HelmFont.mono(.caption))
-                        .foregroundStyle(text.isEmpty ? HelmColor.textTertiary : HelmColor.textPrimary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .padding(HelmSpace.md)
-                        .id("bottom")
-                }
-                .background(HelmColor.obsidian)
-                .onChange(of: text) { _, _ in
-                    withHelmAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                GeometryReader { outer in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            Text(text.isEmpty ? "…" : text)
+                                .font(HelmFont.mono(.caption))
+                                .foregroundStyle(text.isEmpty ? HelmColor.textTertiary : HelmColor.textPrimary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .padding(HelmSpace.md)
+                            BottomFollowSentinel()
+                                .id("bottom")
+                        }
+                        .coordinateSpace(name: bottomFollowContent)
+                    }
+                    .coordinateSpace(name: bottomFollowViewport)
+                    .startsAtBottom()
+                    .background(HelmColor.obsidian)
+                    .onPreferenceChange(BottomFollowKey.self) { m in
+                        follower.update(m, viewport: outer.size.height)
+                    }
+                    .onChange(of: text) { _, _ in
+                        // Only follow new output if the user is at the bottom.
+                        guard follower.following else { return }
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
                 }
             }
             if let error {

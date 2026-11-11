@@ -7,7 +7,7 @@ struct ChatView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var atBottom = true
+    @State private var follower = BottomFollower()
     @State private var renaming = false
     @State private var renameText = ""
     @State private var confirmDelete = false
@@ -19,6 +19,7 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             GeometryReader { outer in
                 ScrollView {
+                    VStack(spacing: 0) {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         if model.transcript.isEmpty && model.pending.isEmpty {
                             EmptyChatHeader(session: model.session)
@@ -39,8 +40,6 @@ struct ChatView: View {
                             TypingIndicator(color: accent)
                                 .transition(HelmMotion.appear)
                         }
-                        BottomSentinel()
-                            .id("bottom")
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
@@ -48,17 +47,27 @@ struct ChatView: View {
                     .helmAnimation(HelmMotion.spring, value: model.transcript.items.count)
                     .helmAnimation(HelmMotion.spring, value: model.pending.count)
                     .helmAnimation(HelmMotion.spring, value: model.isRunning)
+                    // Outside the LazyVStack so it is never unloaded when the
+                    // user scrolls far up.
+                    BottomFollowSentinel()
+                        .id("bottom")
+                    }
+                    .coordinateSpace(name: bottomFollowContent)
                 }
                 .helmScreen()
-                .coordinateSpace(name: "chatScroll")
-                .defaultScrollAnchor(.bottom)
+                .coordinateSpace(name: bottomFollowViewport)
+                .startsAtBottom()
                 .scrollDismissesKeyboard(.interactively)
-                .onPreferenceChange(BottomOffsetKey.self) { maxY in
-                    atBottom = maxY <= outer.size.height + 120
+                .onPreferenceChange(BottomFollowKey.self) { m in
+                    follower.update(m, viewport: outer.size.height)
+                }
+                .onChange(of: model.pending.count) { old, new in
+                    // Sending a message always brings the user back down.
+                    if new > old { follower.following = true }
                 }
                 .onChange(of: scrollKey) {
-                    guard atBottom else { return }
-                    withHelmAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                    guard follower.following else { return }
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onAppear {
                     Task {
@@ -67,16 +76,17 @@ struct ChatView: View {
                     }
                 }
                 .overlay(alignment: .bottom) {
-                    if !atBottom {
+                    if !follower.following {
                         JumpToBottomButton {
                             Haptics.tap()
+                            follower.following = true
                             withHelmAnimation(HelmMotion.spring) { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
                         .padding(.bottom, 10)
                         .transition(.scale.combined(with: .opacity))
                     }
                 }
-                .helmAnimation(HelmMotion.spring, value: atBottom)
+                .helmAnimation(HelmMotion.spring, value: follower.following)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -169,16 +179,3 @@ struct ChatView: View {
     }
 }
 
-private struct BottomOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-private struct BottomSentinel: View {
-    var body: some View {
-        GeometryReader { g in
-            Color.clear.preference(key: BottomOffsetKey.self, value: g.frame(in: .named("chatScroll")).maxY)
-        }
-        .frame(height: 1)
-    }
-}

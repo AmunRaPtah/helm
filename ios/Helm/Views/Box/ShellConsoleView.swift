@@ -7,6 +7,7 @@ struct ShellConsoleView: View {
     @State private var cmd = ""
     @State private var cwd = "/root"
     @State private var output = ""
+    @State private var follower = BottomFollower()
     @State private var exitCode: Int?
     @State private var running = false
 
@@ -29,16 +30,30 @@ struct ShellConsoleView: View {
 
     private var terminal: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                Text(output.isEmpty ? "Run a command to see output here." : output)
-                    .font(HelmFont.mono(.caption))
-                    .foregroundStyle(output.isEmpty ? HelmColor.textTertiary : HelmColor.textPrimary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(HelmSpace.md)
-                    .id("bottom")
+            GeometryReader { outer in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        Text(output.isEmpty ? "Run a command to see output here." : output)
+                            .font(HelmFont.mono(.caption))
+                            .foregroundStyle(output.isEmpty ? HelmColor.textTertiary : HelmColor.textPrimary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding(HelmSpace.md)
+                        BottomFollowSentinel()
+                            .id("bottom")
+                    }
+                    .coordinateSpace(name: bottomFollowContent)
+                }
+                .coordinateSpace(name: bottomFollowViewport)
+                .onPreferenceChange(BottomFollowKey.self) { m in
+                    follower.update(m, viewport: outer.size.height)
+                }
+                .onChange(of: output) { _, _ in
+                    // Only follow new output if the user is at the bottom.
+                    guard follower.following else { return }
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
-            .onChange(of: output) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
@@ -126,6 +141,7 @@ struct ShellConsoleView: View {
     private func run() {
         let c = cmd
         running = true
+        follower.following = true  // a new command's output starts at its end
         exitCode = nil
         Haptics.tap()
         Task {
