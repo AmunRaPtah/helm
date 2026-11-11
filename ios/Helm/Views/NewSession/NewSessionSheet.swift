@@ -18,10 +18,15 @@ struct NewSessionSheet: View {
 
     private var harness: Harness? { store.harnesses.first { $0.id == harnessId } }
 
+    private var cwdName: String {
+        let last = (cwd as NSString).lastPathComponent
+        return last.isEmpty ? cwd : last
+    }
+
     var body: some View {
         NavigationStack {
             Form {
-                Section("Harness") {
+                Section {
                     HarnessGrid(harnesses: store.harnesses, selection: $harnessId)
                         .listRowInsets(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
                     if let h = harness, h.supportsProfiles {
@@ -29,23 +34,37 @@ struct NewSessionSheet: View {
                             Text("Default").tag("")
                             ForEach(h.profiles, id: \.self) { Text($0).tag($0) }
                         }
+                        .foregroundStyle(HelmColor.textPrimary)
                     }
+                } header: {
+                    HelmSectionHeader(title: "Harness")
                 }
+                .helmRow()
 
-                Section("Working directory") {
+                Section {
                     NavigationLink {
                         DirectoryPicker(selection: $cwd)
                     } label: {
                         Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text((cwd as NSString).lastPathComponent.isEmpty ? cwd : (cwd as NSString).lastPathComponent)
-                                Text(cwd).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(cwdName)
+                                    .font(HelmFont.rowTitle)
+                                    .foregroundStyle(HelmColor.textPrimary)
+                                Text(cwd)
+                                    .font(HelmFont.mono(.caption))
+                                    .foregroundStyle(HelmColor.textTertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.head)
                             }
                         } icon: {
-                            Image(systemName: "folder.fill").foregroundStyle(.tint)
+                            Image(systemName: "folder.fill")
+                                .foregroundStyle(HelmColor.lime.opacity(0.85))
                         }
                     }
+                } header: {
+                    HelmSectionHeader(title: "Working directory")
                 }
+                .helmRow()
 
                 Section {
                     Picker("Permissions", selection: $permission) {
@@ -53,37 +72,57 @@ struct NewSessionSheet: View {
                             Label(m.label, systemImage: m.symbol).tag(m.rawValue)
                         }
                     }
+                    .foregroundStyle(HelmColor.textPrimary)
                     modelField
                 } header: {
-                    Text("Options")
+                    HelmSectionHeader(title: "Options")
                 } footer: {
                     Text("Bypass runs every tool without asking, like your terminal sessions on the box.")
+                        .foregroundStyle(HelmColor.textTertiary)
                 }
+                .helmRow()
 
-                Section("First message") {
+                Section {
                     TextField("What should we work on?", text: $text, axis: .vertical)
                         .lineLimit(3...10)
                         .focused($messageFocused)
+                        .foregroundStyle(HelmColor.textPrimary)
+                } header: {
+                    HelmSectionHeader(title: "First message")
                 }
+                .helmRow()
 
                 if let error {
                     Section {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                            .font(.footnote)
+                        Label {
+                            Text(error).font(HelmFont.mono(.caption))
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                        }
+                        .foregroundStyle(HelmColor.red)
+                        .font(.footnote)
                     }
+                    .listRowBackground(HelmColor.red.opacity(0.08))
+                    .transition(.opacity)
                 }
             }
+            .helmScreen()
+            .tint(HelmColor.lime)
+            .helmAnimation(HelmMotion.spring, value: error)
             .navigationTitle("New chat")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(HelmColor.textSecondary)
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     if creating {
-                        ProgressView()
+                        ProgressView().tint(HelmColor.lime)
                     } else {
                         Button("Start") { Task { await create() } }
-                            .fontWeight(.semibold)
+                            .fontWeight(.bold)
+                            .tint(HelmColor.lime)
                             .disabled(harness?.available == false || store.harnesses.isEmpty && harnessId.isEmpty)
                     }
                 }
@@ -108,10 +147,13 @@ struct NewSessionSheet: View {
                 Text(h.defaultModel.map { "Default (\($0))" } ?? "Default").tag("")
                 ForEach(h.models, id: \.self) { Text($0).tag($0) }
             }
+            .foregroundStyle(HelmColor.textPrimary)
         } else {
             TextField("Model (optional)", text: $model)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .font(HelmFont.mono(.body))
+                .foregroundStyle(HelmColor.textPrimary)
         }
     }
 

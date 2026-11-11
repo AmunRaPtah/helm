@@ -10,59 +10,86 @@ struct TransfersView: View {
     var body: some View {
         List {
             if transfers.items.isEmpty {
-                Text("No transfers yet. Upload from a box folder's + menu, or swipe right on a file or folder to download it.")
-                    .foregroundStyle(.secondary)
+                HelmEmptyState(title: "No transfers yet",
+                               message: "Upload from a box folder's + menu, or swipe right on a file or folder to download it.",
+                               systemImage: "arrow.up.arrow.down")
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
-            ForEach(transfers.items) { t in row(t) }
+            ForEach(transfers.items) { t in
+                row(t)
+                    .helmRow()
+            }
         }
+        .helmScreen()
+        .tint(HelmColor.lime)
         .navigationTitle("Transfers")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("Clear") { transfers.clearFinished() }
+                Button("Clear") {
+                    Haptics.tap()
+                    transfers.clearFinished()
+                }
+                .foregroundStyle(HelmColor.textSecondary)
                     .disabled(!transfers.items.contains { !$0.isRunning })
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Done") { dismiss() }
+                    .fontWeight(.semibold)
             }
         }
         .quickLookPreview($previewURL)
     }
 
     private func row(_ t: Transfer) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: HelmSpace.sm) {
             HStack(spacing: 10) {
                 Image(systemName: t.kind == .upload ? "arrow.up.circle" : "arrow.down.circle")
                     .foregroundStyle(color(t))
                 Image(systemName: t.isFolder ? "folder" : PickedFile.icon(for: t.name))
-                    .foregroundStyle(.secondary)
-                Text(t.name).lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(HelmColor.textTertiary)
+                Text(t.name)
+                    .font(HelmFont.body)
+                    .foregroundStyle(HelmColor.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Spacer(minLength: 0)
                 if t.isRunning {
-                    Button { transfers.cancel(t) } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    Button {
+                        Haptics.warning()
+                        transfers.cancel(t)
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(HelmColor.textTertiary)
                         .accessibilityLabel("Cancel")
                 } else if let url = t.localURL, !t.isFolder {
-                    Button { previewURL = url } label: { Image(systemName: "eye") }
+                    Button {
+                        Haptics.tap()
+                        previewURL = url
+                    } label: { Image(systemName: "eye") }
                         .buttonStyle(.borderless)
+                        .foregroundStyle(HelmColor.lime)
                         .accessibilityLabel("Preview")
                 }
             }
             if t.isRunning {
-                if let f = t.fraction { ProgressView(value: f) } else { ProgressView(value: 0).opacity(0.4) }
+                TransferBar(fraction: t.fraction)
             }
             Text(detail(t))
-                .font(.caption.monospaced())
-                .foregroundStyle(isFailed(t) ? Color.red : Color.secondary)
+                .font(HelmFont.mono(.caption2))
+                .foregroundStyle(isFailed(t) ? HelmColor.red : HelmColor.textTertiary)
                 .lineLimit(2).truncationMode(.head)
             if !t.failures.isEmpty {
                 DisclosureGroup("\(t.failures.count) failed") {
-                    ForEach(t.failures, id: \.self) { Text($0).font(.caption2.monospaced()).foregroundStyle(.red) }
+                    ForEach(t.failures, id: \.self) { Text($0).font(HelmFont.mono(.caption2)).foregroundStyle(HelmColor.red) }
                 }
-                .font(.caption)
+                .font(HelmFont.mono(.caption, weight: .medium))
+                .foregroundStyle(HelmColor.red)
+                .tint(HelmColor.red)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, HelmSpace.xs)
         .contextMenu {
             if let p = t.remotePath {
                 Button { UIPasteboard.general.string = p } label: { Label("Copy box path", systemImage: "doc.on.doc") }
@@ -100,10 +127,33 @@ struct TransfersView: View {
 
     private func color(_ t: Transfer) -> Color {
         switch t.state {
-        case .running: return .accentColor
-        case .done: return .green
-        case .failed: return .red
-        case .cancelled: return .secondary
+        case .running: return HelmColor.lime
+        case .done: return HelmColor.lime
+        case .failed: return HelmColor.red
+        case .cancelled: return HelmColor.textTertiary
         }
+    }
+}
+
+/// Thin lime progress track. Indeterminate (nil) shows a dim empty track.
+private struct TransferBar: View {
+    let fraction: Double?
+
+    var body: some View {
+        let value = min(max(fraction ?? 0, 0), 1)
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.06))
+                Capsule()
+                    .fill(HelmColor.lime)
+                    .frame(width: geo.size.width * value)
+                    .shadow(color: HelmColor.lime.opacity(0.45), radius: 3)
+            }
+        }
+        .frame(height: 3)
+        .opacity(fraction == nil ? 0.4 : 1)
+        .helmAnimation(HelmMotion.snappy, value: value)
+        .accessibilityElement()
+        .accessibilityValue(fraction.map { "\(Int($0 * 100)) percent" } ?? "In progress")
     }
 }

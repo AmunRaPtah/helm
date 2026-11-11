@@ -6,19 +6,39 @@ struct ChatTitle: View {
     let phase: SessionStream.Phase
 
     var body: some View {
-        VStack(spacing: 1) {
+        VStack(spacing: 2) {
             Text(session.displayTitle)
-                .font(.subheadline.weight(.semibold))
+                .font(.system(.subheadline, weight: .semibold))
+                .tracking(-0.1)
+                .foregroundStyle(HelmColor.textPrimary)
                 .lineLimit(1)
-            HStack(spacing: 4) {
-                StateDot(state: state)
+            HStack(spacing: 5) {
+                StateDot(state: displayState)
                 Text(subtitle)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .contentTransition(.opacity)
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(HelmFont.mono(.caption2))
+            .foregroundStyle(subtitleColor)
+            .helmAnimation(HelmMotion.spring, value: subtitle)
         }
         .frame(maxWidth: 240)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var displayState: SessionState {
+        switch phase {
+        case .connecting, .waiting: return .starting
+        case .idle, .live: return state
+        }
+    }
+
+    private var subtitleColor: Color {
+        switch phase {
+        case .waiting: return HelmColor.amber
+        default: return HelmColor.textSecondary
+        }
     }
 
     private var subtitle: String {
@@ -35,41 +55,52 @@ struct ChatTitle: View {
 
 struct EmptyChatHeader: View {
     let session: Session
+    @State private var shown = false
 
     var body: some View {
-        VStack(spacing: 10) {
-            HarnessBadge(harness: session.harness, size: 56)
-            Text(HarnessStyle.of(session.harness).shortName)
-                .font(.headline)
-            Text(session.cwd)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-            Text("Session \(session.id) \u{00B7} \(session.permission)")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+        let style = HarnessStyle.of(session.harness)
+        VStack(spacing: 14) {
+            ZStack {
+                RadialGradient(colors: [style.color.opacity(0.22), .clear], center: .center, startRadius: 0, endRadius: 70)
+                    .frame(width: 150, height: 150)
+                HarnessBadge(harness: session.harness, size: 60)
+            }
+            .frame(height: 96)
+            VStack(spacing: 6) {
+                Text(style.shortName)
+                    .font(.system(.title3, weight: .bold))
+                    .tracking(-0.3)
+                    .foregroundStyle(HelmColor.textPrimary)
+                if !session.cwd.isEmpty {
+                    Text(session.cwd)
+                        .font(HelmFont.mono(.caption))
+                        .foregroundStyle(HelmColor.textSecondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            HStack(spacing: 6) {
+                MonoTag(text: session.id, systemImage: "number")
+                MonoTag(text: session.permission, systemImage: "lock.open")
+            }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
+        .padding(.vertical, 44)
+        .opacity(shown ? 1 : 0)
+        .scaleEffect(shown ? 1 : 0.97)
+        .onAppear { withHelmAnimation(HelmMotion.gentle) { shown = true } }
     }
 }
 
+/// "Working" indicator shown while the agent runs.
 struct TypingIndicator: View {
     let color: Color
-    @State private var animate = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<3) { i in
-                Circle()
-                    .fill(color)
-                    .frame(width: 7, height: 7)
-                    .opacity(animate ? 1 : 0.3)
-                    .animation(.easeInOut(duration: 0.6).repeatForever().delay(Double(i) * 0.2), value: animate)
-            }
-        }
-        .padding(.vertical, 6)
-        .onAppear { animate = true }
-        .accessibilityLabel("Working")
+        ThinkingIndicator(color: HelmColor.lime, label: "Working")
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -78,13 +109,14 @@ struct JumpToBottomButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "arrow.down")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(HelmColor.textPrimary)
                 .frame(width: 38, height: 38)
-                .background(.regularMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(Color.primary.opacity(0.1)))
-                .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(HelmColor.hairlineStrong, lineWidth: 1))
+                .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HelmPressStyle())
         .accessibilityLabel("Jump to bottom")
     }
 }
@@ -95,21 +127,35 @@ struct ResumeBanner: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "moon.zzz.fill").foregroundStyle(.secondary)
-            Text("This session has exited.")
-                .font(.subheadline)
+            Image(systemName: "moon.zzz.fill")
+                .foregroundStyle(HelmColor.textTertiary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Session exited")
+                    .font(.system(.subheadline, weight: .semibold))
+                    .foregroundStyle(HelmColor.textPrimary)
+                Text("Resume to continue where it left off.")
+                    .font(.caption)
+                    .foregroundStyle(HelmColor.textSecondary)
+            }
             Spacer()
             Button(action: action) {
-                if isResuming { ProgressView() } else { Text("Resume").fontWeight(.semibold) }
+                Group {
+                    if isResuming {
+                        ProgressView().tint(HelmColor.onLime)
+                    } else {
+                        Label("Resume", systemImage: "play.fill")
+                    }
+                }
+                .font(.system(.subheadline, weight: .semibold))
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
+            .buttonStyle(HelmPrimaryButtonStyle(fullWidth: false))
             .controlSize(.small)
             .disabled(isResuming)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.bar)
+        .background(HelmColor.surface.opacity(0.92))
+        .overlay(alignment: .top) { Rectangle().fill(HelmColor.hairline).frame(height: 1) }
     }
 }
 
@@ -119,15 +165,23 @@ struct ErrorBanner: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(text).font(.footnote)
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(HelmColor.amber)
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(HelmColor.textPrimary)
             Spacer()
-            Button(action: onDismiss) { Image(systemName: "xmark").font(.caption.weight(.bold)) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark").font(.caption.weight(.bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(HelmColor.textSecondary)
+            .accessibilityLabel("Dismiss")
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color.orange.opacity(0.12))
+        .padding(.vertical, 10)
+        .background(HelmColor.amber.opacity(0.10))
+        .background(HelmColor.surface)
+        .overlay(alignment: .leading) { Rectangle().fill(HelmColor.amber).frame(width: 2) }
     }
 }

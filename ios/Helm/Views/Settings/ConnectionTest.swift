@@ -32,28 +32,58 @@ struct ConnectionTestResult: View {
 
     var body: some View {
         switch state {
-        case .idle, .running:
+        case .idle:
             EmptyView()
+        case .running:
+            HStack(spacing: HelmSpace.sm) {
+                PulseDot(color: HelmColor.amber, size: 7)
+                Text("probing /health")
+                    .font(HelmFont.mono(.caption, weight: .medium))
+                    .foregroundStyle(HelmColor.amber)
+            }
+            .padding(.vertical, 2)
+            .transition(.opacity)
         case .success(let version, let harnesses):
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Connected to helmd v\(version)", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.subheadline.weight(.medium))
+            VStack(alignment: .leading, spacing: HelmSpace.sm) {
+                HStack(spacing: HelmSpace.sm) {
+                    PulseDot(color: HelmColor.lime, size: 7, isActive: false)
+                    Text("Connected")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(HelmColor.lime)
+                    Spacer(minLength: 0)
+                    Text("helmd v\(version)")
+                        .font(HelmFont.mono(.caption, weight: .medium))
+                        .foregroundStyle(HelmColor.textSecondary)
+                }
                 if harnesses.isEmpty {
-                    Text("No harnesses reported.").font(.footnote).foregroundStyle(.secondary)
+                    Text("no harnesses reported")
+                        .font(HelmFont.mono(.caption))
+                        .foregroundStyle(HelmColor.textTertiary)
                 } else {
                     FlowRow(harnesses: harnesses)
                 }
             }
             .padding(.vertical, 2)
+            .transition(.opacity)
         case .failure(let step, let message):
-            VStack(alignment: .leading, spacing: 4) {
-                Label("\(step) failed", systemImage: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-                    .font(.subheadline.weight(.medium))
-                Text(message).font(.footnote).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: HelmSpace.xs) {
+                HStack(spacing: HelmSpace.sm) {
+                    Image(systemName: "xmark.octagon.fill")
+                        .font(.subheadline)
+                    Text("Failed")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Text(step)
+                        .font(HelmFont.mono(.caption, weight: .medium))
+                }
+                .foregroundStyle(HelmColor.red)
+                Text(message)
+                    .font(HelmFont.mono(.caption))
+                    .foregroundStyle(HelmColor.textSecondary)
+                    .textSelection(.enabled)
             }
             .padding(.vertical, 2)
+            .transition(.opacity)
         }
     }
 }
@@ -64,15 +94,17 @@ private struct FlowRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(harnesses) { h in
+                    let style = HarnessStyle.of(h.id)
                     HStack(spacing: 4) {
-                        Image(systemName: HarnessStyle.of(h.id).symbol)
+                        Image(systemName: style.symbol)
                         Text(h.name)
                     }
-                    .font(.caption.weight(.medium))
+                    .font(HelmFont.mono(.caption2, weight: .medium))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(HarnessStyle.of(h.id).color.opacity(h.available ? 0.18 : 0.06), in: Capsule())
-                    .foregroundStyle(h.available ? HarnessStyle.of(h.id).color : .secondary)
+                    .background(Capsule().fill(style.color.opacity(h.available ? 0.14 : 0.05)))
+                    .overlay(Capsule().strokeBorder(h.available ? style.color.opacity(0.3) : HelmColor.hairline, lineWidth: 0.5))
+                    .foregroundStyle(h.available ? style.color : HelmColor.textTertiary)
                 }
             }
         }

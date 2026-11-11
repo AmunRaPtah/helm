@@ -33,7 +33,7 @@ targets:
           UIImageRespectsSafeAreaInsets: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        UIUserInterfaceStyle: Automatic
+        UIUserInterfaceStyle: Dark
         CFBundleDocumentTypes:
           - CFBundleTypeName: PKCS12 certificate
             LSHandlerRank: Alternate

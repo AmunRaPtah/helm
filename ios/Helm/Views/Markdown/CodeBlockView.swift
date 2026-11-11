@@ -6,11 +6,13 @@ struct CodeBlockView: View {
     @State private var copied = false
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: HelmRadius.control, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(language.isEmpty ? "code" : language)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+            HStack(spacing: HelmSpace.sm) {
+                Text(language.isEmpty ? "code" : language.lowercased())
+                    .font(HelmFont.mono(.caption2, weight: .medium))
+                    .tracking(0.6)
+                    .foregroundStyle(HelmColor.textTertiary)
                 Spacer()
                 Button {
                     UIPasteboard.general.string = code
@@ -22,25 +24,31 @@ struct CodeBlockView: View {
                     }
                 } label: {
                     Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .font(.caption)
+                        .font(HelmFont.mono(.caption2, weight: .medium))
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(copied ? HelmColor.lime : HelmColor.textSecondary)
+                .helmAnimation(HelmMotion.snappy, value: copied)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color.primary.opacity(0.04))
+            .padding(.vertical, 7)
+            .background(Color.white.opacity(0.025))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(HelmColor.hairline).frame(height: 1)
+            }
 
             ScrollView(.horizontal, showsIndicators: true) {
                 Text(code)
-                    .font(.system(.footnote, design: .monospaced))
+                    .font(HelmFont.mono(.footnote))
+                    .foregroundStyle(HelmColor.textPrimary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: true, vertical: true)
                     .padding(12)
             }
         }
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
+        .background(HelmColor.surface, in: shape)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(HelmColor.hairlineStrong, lineWidth: 1))
     }
 }

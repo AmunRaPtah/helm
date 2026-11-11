@@ -17,33 +17,57 @@ struct BoxUploadView: View {
 
     var body: some View {
         List {
-            Section("Destination") {
+            Section {
                 NavigationLink { DirectoryPicker(selection: $dir, startPath: dir) } label: {
-                    Label(dir, systemImage: "folder")
-                        .font(.callout.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.head)
+                    Label {
+                        Text(dir)
+                            .font(HelmFont.mono(.callout))
+                            .foregroundStyle(HelmColor.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    } icon: {
+                        Image(systemName: "folder").foregroundStyle(HelmColor.textSecondary)
+                    }
                 }
+                .helmRow()
+            } header: {
+                HelmSectionHeader(title: "Destination")
             }
             Section {
-                Button { importFolders = false; showImporter = true } label: { Label("Choose files", systemImage: "doc.badge.plus") }
-                Button { importFolders = true; showImporter = true } label: { Label("Choose a folder", systemImage: "folder.badge.plus") }
-                PhotosPicker(selection: $photoItems, maxSelectionCount: 50, matching: .any(of: [.images, .videos])) {
-                    Label("Choose photos or videos", systemImage: "photo.on.rectangle")
+                Button { Haptics.tap(); importFolders = false; showImporter = true } label: {
+                    pickerLabel("Choose files", systemImage: "doc.badge.plus")
                 }
+                .helmRow()
+                Button { Haptics.tap(); importFolders = true; showImporter = true } label: {
+                    pickerLabel("Choose a folder", systemImage: "folder.badge.plus")
+                }
+                .helmRow()
+                PhotosPicker(selection: $photoItems, maxSelectionCount: 50, matching: .any(of: [.images, .videos])) {
+                    pickerLabel("Choose photos or videos", systemImage: "photo.on.rectangle")
+                }
+                .helmRow()
+            } header: {
+                HelmSectionHeader(title: "Send")
             } footer: {
                 Text("Tip: in any app, Share \u{2192} Helm sends a file straight here. Existing files are never overwritten.")
+                    .foregroundStyle(HelmColor.textTertiary)
             }
             if let error {
-                Text(error).font(.footnote).foregroundStyle(.red)
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(HelmColor.red)
+                    .helmRow()
             }
             let mine = transfers.items.filter { started.contains($0.id) }
             if !mine.isEmpty {
-                Section("Uploads") {
-                    ForEach(mine) { t in row(t) }
+                Section {
+                    ForEach(mine) { t in row(t).helmRow() }
+                } header: {
+                    HelmSectionHeader(title: "Uploads", trailing: "\(mine.count)")
                 }
             }
         }
+        .helmScreen()
         .navigationTitle("Upload to box")
         .navigationBarTitleDisplayMode(.inline)
         .fileImporter(isPresented: $showImporter,
@@ -60,16 +84,23 @@ struct BoxUploadView: View {
         .task(id: inbox.pending.count) { drainInbox() }
     }
 
+    private func pickerLabel(_ title: String, systemImage: String) -> some View {
+        Label {
+            Text(title).foregroundStyle(HelmColor.textPrimary)
+        } icon: {
+            Image(systemName: systemImage).foregroundStyle(HelmColor.lime)
+        }
+    }
+
     private func row(_ t: Transfer) -> some View {
-        HStack(spacing: 10) {
-            switch t.state {
-            case .running: ProgressView().controlSize(.small)
-            case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-            case .cancelled: Image(systemName: "xmark.circle").foregroundStyle(.secondary)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(t.name).font(.subheadline).lineLimit(1)
+        HStack(spacing: HelmSpace.md) {
+            stateIcon(t)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(t.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(HelmColor.textPrimary)
+                    .lineLimit(1)
                 Group {
                     switch t.state {
                     case .running:
@@ -79,12 +110,17 @@ struct BoxUploadView: View {
                     case .cancelled: Text("Cancelled")
                     }
                 }
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+                .font(HelmFont.mono(.caption2))
+                .monospacedDigit()
+                .foregroundStyle(detailTint(t))
                 .lineLimit(2)
                 .truncationMode(.head)
+                if t.isRunning, let f = t.fraction {
+                    progressTrack(f)
+                }
             }
         }
+        .padding(.vertical, 2)
         .contextMenu {
             if let p = t.remotePath {
                 Button { UIPasteboard.general.string = p } label: { Label("Copy path", systemImage: "doc.on.doc") }
@@ -92,6 +128,36 @@ struct BoxUploadView: View {
             if t.isRunning {
                 Button(role: .destructive) { transfers.cancel(t) } label: { Label("Cancel", systemImage: "xmark") }
             }
+        }
+    }
+
+    @ViewBuilder private func stateIcon(_ t: Transfer) -> some View {
+        switch t.state {
+        case .running: ProgressView().controlSize(.small).tint(HelmColor.lime)
+        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(HelmColor.lime)
+        case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(HelmColor.red)
+        case .cancelled: Image(systemName: "xmark.circle").foregroundStyle(HelmColor.textTertiary)
+        }
+    }
+
+    private func progressTrack(_ f: Double) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.06))
+                Capsule()
+                    .fill(HelmColor.lime)
+                    .frame(width: max(2, min(1, max(0, f)) * geo.size.width))
+            }
+        }
+        .frame(height: 3)
+        .helmAnimation(HelmMotion.gentle, value: f)
+        .accessibilityHidden(true)
+    }
+
+    private func detailTint(_ t: Transfer) -> Color {
+        switch t.state {
+        case .failed: return HelmColor.red
+        default: return HelmColor.textTertiary
         }
     }
 

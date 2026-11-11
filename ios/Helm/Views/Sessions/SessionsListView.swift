@@ -15,11 +15,12 @@ struct SessionsListView: View {
                 .navigationTitle("Helm")
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        Button { Haptics.tap(); showSettings = true } label: { Image(systemName: "gearshape") }
+                            .tint(HelmColor.textSecondary)
                             .accessibilityLabel("Settings")
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { showNew = true } label: { Image(systemName: "square.and.pencil") }
+                        Button { Haptics.tap(); showNew = true } label: { Image(systemName: "square.and.pencil") }
                             .accessibilityLabel("New chat")
                     }
                 }
@@ -58,22 +59,39 @@ struct SessionsListView: View {
         }
     }
 
+    private var isFirstLoad: Bool {
+        store.sessions.isEmpty && store.listError == nil && store.lastSync == nil
+    }
+
     @ViewBuilder
     private var list: some View {
         List {
             if let err = store.listError {
                 OfflineBanner(message: err, lastSync: store.lastSync)
                     .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    .transition(HelmMotion.appear)
+            }
+            if isFirstLoad {
+                ForEach(0..<5, id: \.self) { _ in
+                    SkeletonRow()
+                        .listRowBackground(Color.clear)
+                        .listRowSeparatorTint(HelmColor.hairline)
+                }
             }
             ForEach(store.sessions) { s in
                 NavigationLink(value: s.id) {
                     SessionRow(session: s)
                 }
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(HelmColor.hairline)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 52 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) { pendingDelete = s } label: {
                         Label("Delete", systemImage: "trash")
                     }
+                    .tint(HelmColor.red)
                 }
                 .contextMenu {
                     Button { UIPasteboard.general.string = s.tmuxAttachCommand } label: {
@@ -84,16 +102,21 @@ struct SessionsListView: View {
                     }
                 }
             }
+            // Room for the floating New chat button.
+            Color.clear
+                .frame(height: 8)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
         }
         .listStyle(.plain)
+        .helmScreen()
         .refreshable { await store.refresh() }
+        .helmAnimation(HelmMotion.spring, value: store.sessions.map(\.id))
+        .helmAnimation(HelmMotion.spring, value: store.listError)
         .overlay {
-            if store.sessions.isEmpty && store.listError == nil {
-                ContentUnavailableView {
-                    Label("No chats yet", systemImage: "bubble.left.and.text.bubble.right")
-                } description: {
-                    Text("Start a session with Claude Code, Codex or any harness on your box.")
-                }
+            if store.sessions.isEmpty && store.listError == nil && !isFirstLoad {
+                HelmEmptyState(title: "No chats yet",
+                               message: "Start a session with Claude Code, Codex or any harness on your box.")
             }
         }
     }
@@ -104,15 +127,17 @@ struct SessionsListView: View {
             showNew = true
         } label: {
             Label("New chat", systemImage: "plus")
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
         }
-        .buttonStyle(.borderedProminent)
-        .buttonBorderShape(.capsule)
-        .controlSize(.large)
+        .buttonStyle(HelmPrimaryButtonStyle())
         .padding(.horizontal, 20)
+        .padding(.top, 10)
         .padding(.bottom, 8)
+        .background {
+            LinearGradient(colors: [HelmColor.obsidian.opacity(0), HelmColor.obsidian.opacity(0.92)],
+                           startPoint: .top, endPoint: .center)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        }
     }
 }
 
@@ -123,19 +148,19 @@ private struct OfflineBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "wifi.exclamationmark")
-                .foregroundStyle(.orange)
+                .foregroundStyle(HelmColor.amber)
             VStack(alignment: .leading, spacing: 2) {
-                Text(message).font(.footnote.weight(.medium))
+                Text(message).font(.footnote.weight(.medium)).foregroundStyle(HelmColor.textPrimary)
                 if let lastSync {
                     Text("Showing cached chats from \(lastSync.formatted(.relative(presentation: .named)))")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(HelmFont.mono(.caption2)).foregroundStyle(HelmColor.textSecondary)
                 } else {
-                    Text("Showing cached chats").font(.caption).foregroundStyle(.secondary)
+                    Text("Showing cached chats").font(HelmFont.mono(.caption2)).foregroundStyle(HelmColor.textSecondary)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(10)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(12)
+        .helmCard(radius: HelmRadius.control, fill: HelmColor.amber.opacity(0.08), stroke: HelmColor.amber.opacity(0.25))
     }
 }

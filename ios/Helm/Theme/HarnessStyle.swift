@@ -40,14 +40,22 @@ struct HarnessBadge: View {
 
     var body: some View {
         let style = HarnessStyle.of(harness)
+        let shape = RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-                .fill(style.color.opacity(0.18))
+            shape.fill(HelmColor.raised)
+            shape.fill(
+                LinearGradient(colors: [style.color.opacity(0.30), style.color.opacity(0.08)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            )
+            shape.inset(by: 1.5)
+                .strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
             Image(systemName: style.symbol)
-                .font(.system(size: size * 0.44, weight: .semibold))
+                .font(.system(size: size * 0.42, weight: .semibold))
                 .foregroundStyle(style.color)
+                .shadow(color: style.color.opacity(0.35), radius: size * 0.12)
         }
         .frame(width: size, height: size)
+        .overlay(shape.strokeBorder(style.color.opacity(0.28), lineWidth: 0.75))
         .accessibilityLabel(style.shortName)
     }
 }

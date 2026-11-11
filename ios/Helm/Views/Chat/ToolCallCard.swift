@@ -5,85 +5,110 @@ struct ToolCallCard: View {
     let isLive: Bool
     @State private var expanded = false
 
+    private var isRunning: Bool { !call.isError && call.output == nil && isLive }
+
+    private var statusTint: Color {
+        if call.isError { return HelmColor.red }
+        if isRunning { return HelmColor.lime }
+        return HelmColor.textTertiary.opacity(0.6)
+    }
+
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: HelmRadius.control, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+                Haptics.tap()
+                withHelmAnimation { expanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
                     statusIcon
+                        .frame(width: 16)
                     Text(call.name)
-                        .font(.footnote.weight(.semibold).monospaced())
-                        .foregroundStyle(call.isError ? .red : .primary)
+                        .font(HelmFont.mono(.footnote, weight: .semibold))
+                        .foregroundStyle(call.isError ? HelmColor.red : HelmColor.textPrimary)
                     Text(ToolSummary.oneLine(call))
-                        .font(.footnote.monospaced())
-                        .foregroundStyle(.secondary)
+                        .font(HelmFont.mono(.footnote))
+                        .foregroundStyle(HelmColor.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(HelmColor.textTertiary)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
+                .padding(.leading, 14)
+                .padding(.trailing, 12)
+                .padding(.vertical, 10)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             if expanded {
-                Divider()
-                VStack(alignment: .leading, spacing: 10) {
+                Rectangle().fill(HelmColor.hairline).frame(height: 1)
+                VStack(alignment: .leading, spacing: 12) {
                     if !call.input.isEmpty { section("Input", call.input) }
                     if let out = call.output {
                         section(call.isError ? "Error" : "Output", out.isEmpty ? "(no output)" : out)
                     }
                 }
-                .padding(12)
+                .padding(.leading, 14)
+                .padding(.trailing, 12)
+                .padding(.vertical, 12)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(call.isError ? Color.red.opacity(0.10) : Color(.secondarySystemBackground))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(call.isError ? Color.red.opacity(0.5) : Color.primary.opacity(0.06))
-        )
+        .background(shape.fill(call.isError ? HelmColor.red.opacity(0.07) : HelmColor.surface))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(statusTint)
+                .frame(width: 2.5)
+                .shadow(color: isRunning ? HelmColor.lime.opacity(0.6) : .clear, radius: 4)
+        }
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(call.isError ? HelmColor.red.opacity(0.35) : HelmColor.hairline, lineWidth: 1))
+        .helmAnimation(HelmMotion.spring, value: isRunning)
+        .helmAnimation(HelmMotion.spring, value: call.isError)
     }
 
     @ViewBuilder
     private var statusIcon: some View {
         if call.isError {
-            Image(systemName: "xmark.octagon.fill").foregroundStyle(.red).font(.footnote)
-        } else if call.output == nil && isLive {
-            ProgressView().controlSize(.mini)
+            Image(systemName: "xmark.octagon.fill").foregroundStyle(HelmColor.red).font(.footnote)
+        } else if isRunning {
+            ProgressView().controlSize(.mini).tint(HelmColor.lime)
         } else {
-            Image(systemName: ToolSummary.symbol(call.name)).foregroundStyle(.secondary).font(.footnote)
+            Image(systemName: ToolSummary.symbol(call.name)).foregroundStyle(HelmColor.textSecondary).font(.footnote)
         }
     }
 
     private func section(_ title: String, _ body: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(title.uppercased())
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(0.8)
+                    .foregroundStyle(title == "Error" ? HelmColor.red : HelmColor.textTertiary)
                 Spacer()
                 Button {
                     UIPasteboard.general.string = body
                     Haptics.tap()
                 } label: { Image(systemName: "doc.on.doc").font(.caption) }
                 .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(HelmColor.textSecondary)
+                .accessibilityLabel("Copy \(title.lowercased())")
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(body.count > 6000 ? String(body.prefix(6000)) + "\n\u{2026}" : body)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(title == "Error" ? .red : .primary)
+                    .font(HelmFont.mono(.caption))
+                    .foregroundStyle(title == "Error" ? HelmColor.red : HelmColor.textPrimary.opacity(0.9))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: true, vertical: true)
+                    .padding(10)
             }
             .frame(maxHeight: 320)
+            .background(RoundedRectangle(cornerRadius: HelmRadius.chip, style: .continuous).fill(HelmColor.obsidian))
+            .overlay(RoundedRectangle(cornerRadius: HelmRadius.chip, style: .continuous).strokeBorder(HelmColor.hairline, lineWidth: 1))
         }
     }
 }

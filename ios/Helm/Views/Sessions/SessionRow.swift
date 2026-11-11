@@ -4,37 +4,46 @@ struct SessionRow: View {
     let session: Session
 
     var body: some View {
-        HStack(spacing: 12) {
+        let style = HarnessStyle.of(session.harness)
+        let exited = session.state == .exited
+        HStack(alignment: .top, spacing: 12) {
             HarnessBadge(harness: session.harness, size: 40)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline) {
+                .saturation(exited ? 0.35 : 1)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(session.displayTitle)
-                        .font(.body.weight(.medium))
+                        .font(HelmFont.rowTitle)
+                        .tracking(-0.2)
+                        .foregroundStyle(exited ? HelmColor.textSecondary : HelmColor.textPrimary)
                         .lineLimit(1)
-                        .foregroundStyle(session.state == .exited ? .secondary : .primary)
                     Spacer(minLength: 6)
                     Text(RelativeTime.string(session.updatedDate))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(HelmFont.mono(.caption2))
+                        .foregroundStyle(HelmColor.textTertiary)
                         .monospacedDigit()
                 }
                 HStack(spacing: 6) {
-                    StateDot(state: session.state)
-                    Text(HarnessStyle.of(session.harness).shortName)
-                        .foregroundStyle(HarnessStyle.of(session.harness).color)
+                    Text(style.shortName)
+                        .font(.system(.caption, weight: .semibold))
+                        .foregroundStyle(style.color.opacity(exited ? 0.6 : 1))
                     if let p = session.profile, !p.isEmpty {
-                        Text(p).foregroundStyle(.secondary)
+                        MonoTag(text: p)
                     }
-                    if !session.cwd.isEmpty {
-                        Image(systemName: "folder").imageScale(.small).foregroundStyle(.tertiary)
-                        Text(session.cwdBasename).foregroundStyle(.secondary).lineLimit(1)
-                    }
+                    Spacer(minLength: 4)
+                    StatePill(state: session.state)
                 }
-                .font(.caption)
+                if !session.cwd.isEmpty {
+                    Text(session.cwd)
+                        .font(HelmFont.mono(.caption2))
+                        .foregroundStyle(HelmColor.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
             }
         }
-        .padding(.vertical, 4)
-        .opacity(session.state == .exited ? 0.7 : 1)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -42,19 +51,8 @@ struct StateDot: View {
     let state: SessionState
 
     var body: some View {
-        Image(systemName: "circle.fill")
-            .font(.system(size: 7))
-            .foregroundStyle(color)
-            .symbolEffect(.pulse, options: .repeating, isActive: state == .running || state == .starting)
+        PulseDot(color: state.tint, size: 6, isActive: state.isLive)
             .accessibilityLabel(state.rawValue)
-    }
-
-    private var color: Color {
-        switch state {
-        case .running, .starting: return .green
-        case .idle: return .blue
-        case .exited, .unknown: return .gray.opacity(0.6)
-        }
     }
 }
 

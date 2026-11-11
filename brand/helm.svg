@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+<radialGradient id="bg" cx="50%" cy="35%" r="80%"><stop offset="0" stop-color="#1B2028"/><stop offset="1" stop-color="#06080A"/></radialGradient>
+<linearGradient id="lime" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#A6E022"/><stop offset="1" stop-color="#EAFF8A"/></linearGradient>
+<linearGradient id="steel" gradientUnits="userSpaceOnUse" x1="0" y1="-320" x2="0" y2="320"><stop offset="0" stop-color="#F4F6F9"/><stop offset="1" stop-color="#AEB6C2"/></linearGradient>
+<filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="16" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<rect width="1024" height="1024" fill="url(#bg)"/>
+<g transform="translate(512 512)" fill="none" stroke-linecap="round">
+<g stroke="url(#steel)" stroke-width="40"><line x1="0.0" y1="-230.0" x2="0.0" y2="-318.0"/><line x1="162.6" y1="-162.6" x2="224.9" y2="-224.9"/><line x1="230.0" y1="0.0" x2="318.0" y2="0.0"/><line x1="162.6" y1="162.6" x2="224.9" y2="224.9"/><line x1="0.0" y1="230.0" x2="0.0" y2="318.0"/><line x1="-162.6" y1="162.6" x2="-224.9" y2="224.9"/><line x1="-230.0" y1="0.0" x2="-318.0" y2="0.0"/><line x1="-162.6" y1="-162.6" x2="-224.9" y2="-224.9"/></g>
+<circle r="210" stroke="url(#steel)" stroke-width="36"/>
+<g filter="url(#glow)">
+<line x1="0" y1="0" x2="128" y2="-128" stroke="url(#lime)" stroke-width="38"/>
+<circle r="54" fill="#06080A" stroke="url(#lime)" stroke-width="30"/>
+</g>
+</g>
+</svg>

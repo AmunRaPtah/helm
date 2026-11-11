@@ -10,6 +10,8 @@ struct MarkdownView: View {
                 BlockView(block: block)
             }
         }
+        .foregroundStyle(HelmColor.textPrimary)
+        .tint(HelmColor.lime)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -20,33 +22,78 @@ private struct BlockView: View {
     var body: some View {
         switch block {
         case .paragraph(let t):
-            InlineText(t)
+            StyledInlineText(source: t)
         case .heading(let level, let t):
-            InlineText(t)
-                .font(level <= 1 ? .title3.weight(.bold) : level == 2 ? .headline : .subheadline.weight(.semibold))
-                .padding(.top, level <= 2 ? 4 : 0)
+            StyledInlineText(source: t)
+                .font(Self.headingFont(level))
+                .tracking(level <= 1 ? -0.4 : -0.2)
+                .foregroundStyle(HelmColor.textPrimary)
+                .padding(.top, level <= 2 ? 6 : 2)
         case .code(let lang, let code):
             CodeBlockView(language: lang, code: code)
         case .listItem(let indent, let marker, let t):
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(marker)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                    .font(HelmFont.mono(.callout, weight: .medium))
+                    .foregroundStyle(HelmColor.textTertiary)
                     .frame(minWidth: 14, alignment: .trailing)
-                InlineText(t)
+                StyledInlineText(source: t)
             }
             .padding(.leading, CGFloat(indent) * 16)
         case .quote(let t):
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 1.5).fill(.tertiary).frame(width: 3)
-                InlineText(t).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Rectangle()
+                    .fill(HelmColor.hairlineStrong)
+                    .frame(width: 2)
+                StyledInlineText(source: t)
+                    .foregroundStyle(HelmColor.textSecondary)
+                    .padding(.vertical, 2)
             }
             .fixedSize(horizontal: false, vertical: true)
         case .table(let rows):
             TableBlock(rows: rows)
         case .rule:
-            Divider().padding(.vertical, 4)
+            Rectangle()
+                .fill(HelmColor.hairlineStrong)
+                .frame(height: 1)
+                .padding(.vertical, 6)
         }
+    }
+
+    private static func headingFont(_ level: Int) -> Font {
+        switch level {
+        case ...1: return .system(.title3, design: .default, weight: .bold)
+        case 2: return .system(.headline, design: .default, weight: .bold)
+        default: return .system(.subheadline, design: .default, weight: .bold)
+        }
+    }
+}
+
+/// InlineText with Helm styling for inline code and links. Only used inside
+/// MarkdownView; `InlineText.attributed(_:)` stays unstyled for other callers.
+private struct StyledInlineText: View {
+    let source: String
+
+    var body: some View {
+        Text(Self.styled(source))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    static func styled(_ s: String) -> AttributedString {
+        var out = InlineText.attributed(s)
+        let codeInk: Color = HelmColor.limeGlow
+        let codeFill: Color = Color.white.opacity(0.07)
+        let linkInk: Color = HelmColor.lime
+        for run in out.runs {
+            if let intent = run.inlinePresentationIntent, intent.contains(.code) {
+                out[run.range].foregroundColor = codeInk
+                out[run.range].backgroundColor = codeFill
+            }
+            if run.link != nil {
+                out[run.range].foregroundColor = linkInk
+            }
+        }
+        return out
     }
 }
 
@@ -85,16 +132,23 @@ private struct TableBlock: View {
                 ForEach(Array(parsed.enumerated()), id: \.offset) { idx, cells in
                     GridRow {
                         ForEach(Array(cells.enumerated()), id: \.offset) { _, c in
-                            Text(InlineText.attributed(c))
+                            Text(StyledInlineText.styled(c))
                                 .font(idx == 0 ? .footnote.weight(.semibold) : .footnote)
+                                .foregroundStyle(idx == 0 ? HelmColor.textPrimary : HelmColor.textSecondary)
                                 .fixedSize()
                         }
                     }
-                    if idx == 0 { Divider() }
+                    if idx == 0 {
+                        Rectangle()
+                            .fill(HelmColor.hairlineStrong)
+                            .frame(height: 1)
+                            .gridCellUnsizedAxes(.horizontal)
+                    }
                 }
             }
-            .padding(10)
+            .padding(12)
         }
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(HelmColor.surface, in: RoundedRectangle(cornerRadius: HelmRadius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: HelmRadius.control, style: .continuous).strokeBorder(HelmColor.hairline, lineWidth: 1))
     }
 }

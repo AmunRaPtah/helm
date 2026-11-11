@@ -6,7 +6,6 @@ struct SettingsView: View {
 
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("helm.appearance") private var appearance = Appearance.dark.rawValue
 
     @State private var url = ""
     @State private var token = ""
@@ -36,7 +35,8 @@ struct SettingsView: View {
                     .textContentType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.body.monospaced())
+                    .font(HelmFont.mono(.body))
+                    .foregroundStyle(HelmColor.textPrimary)
                 HStack {
                     Group {
                         if revealToken {
@@ -47,31 +47,44 @@ struct SettingsView: View {
                     }
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.body.monospaced())
+                    .font(HelmFont.mono(.body))
+                    .foregroundStyle(HelmColor.textPrimary)
                     Button {
+                        Haptics.tap()
                         revealToken.toggle()
                     } label: {
                         Image(systemName: revealToken ? "eye.slash" : "eye")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(HelmColor.textSecondary)
                     }
                     .buttonStyle(.plain)
                     if token.isEmpty {
                         Button("Paste") {
+                            Haptics.tap()
                             if let s = UIPasteboard.general.string { token = s.trimmingCharacters(in: .whitespacesAndNewlines) }
                         }
                         .buttonStyle(.borderless)
+                        .font(.subheadline.weight(.semibold))
+                        .tint(HelmColor.lime)
                     }
                 }
             } header: {
-                Text("Server")
+                HelmSectionHeader(title: "Server")
             } footer: {
                 Text("Over WireGuard: http://10.66.66.1:3340. Without it: https://helm.178-18-250-254.sslip.io plus the client certificate below. The token is in Bitwarden as \u{201C}Helm Token\u{201D} and is stored in the iOS Keychain.")
+                    .foregroundStyle(HelmColor.textTertiary)
             }
+            .helmRow()
 
             Section {
                 if let certName {
-                    LabeledContent("Installed", value: certName)
+                    LabeledContent("Installed") {
+                        Text(certName)
+                            .font(HelmFont.mono(.callout))
+                            .foregroundStyle(HelmColor.textSecondary)
+                    }
+                    .foregroundStyle(HelmColor.textPrimary)
                     Button("Remove certificate", role: .destructive) {
+                        Haptics.warning()
                         ClientIdentity.remove()
                         self.certName = nil
                     }
@@ -81,19 +94,26 @@ struct SettingsView: View {
                     SecureField("Certificate password", text: $p12Password)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .font(HelmFont.mono(.body))
                     Button("Import") { importPending() }
+                        .fontWeight(.semibold)
+                        .tint(HelmColor.lime)
                         .disabled(p12Password.isEmpty)
                     Button("Cancel", role: .cancel) {
+                        Haptics.tap()
                         inbox.pending = nil
                         p12Password = ""
                     }
                 } else {
                     Button {
+                        Haptics.tap()
                         showImporter = true
                     } label: {
                         Label("Import .p12 certificate", systemImage: "lock.shield")
                     }
+                    .tint(HelmColor.textPrimary)
                     Button {
+                        Haptics.tap()
                         certError = nil
                         if let text = UIPasteboard.general.string, let data = CertInbox.decodePasted(text) {
                             p12Password = ""
@@ -104,55 +124,83 @@ struct SettingsView: View {
                     } label: {
                         Label("Paste certificate text", systemImage: "doc.on.clipboard")
                     }
+                    .tint(HelmColor.textPrimary)
                 }
                 if let certError {
-                    Text(certError).font(.footnote).foregroundStyle(.red)
+                    Label {
+                        Text(certError).font(HelmFont.mono(.caption))
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(HelmColor.red)
                 }
             } header: {
-                Text("Client certificate")
+                HelmSectionHeader(title: "Client certificate")
             } footer: {
                 Text("Or share the .p12 to Helm from Telegram, Mail or Files. Password is in Bitwarden as \u{201C}Helm Client Cert\u{201D}. Required for the public https route, which rejects any device without it before helmd is reached. Not needed over WireGuard.")
+                    .foregroundStyle(HelmColor.textTertiary)
             }
+            .helmRow()
 
             Section {
                 Button {
+                    Haptics.tap()
                     Task { await runTest() }
                 } label: {
                     HStack {
                         Label("Test connection", systemImage: "antenna.radiowaves.left.and.right")
+                            .foregroundStyle(HelmColor.textPrimary)
                         Spacer()
-                        if case .running = test { ProgressView() }
+                        if case .running = test {
+                            ProgressView().tint(HelmColor.amber)
+                        }
                     }
                 }
                 .disabled(draft.baseURL == nil || isTesting)
                 ConnectionTestResult(state: test)
+            } header: {
+                HelmSectionHeader(title: "Diagnostics")
             }
+            .helmRow()
 
             Section {
                 Button(isOnboarding ? "Connect" : "Save") { save() }
-                    .frame(maxWidth: .infinity)
-                    .fontWeight(.semibold)
+                    .buttonStyle(HelmPrimaryButtonStyle())
                     .disabled(!draft.isConfigured)
             }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: HelmSpace.xs, leading: 0, bottom: HelmSpace.xs, trailing: 0))
 
             if !isOnboarding {
-                Section("Appearance") {
-                    Picker("Theme", selection: $appearance) {
-                        ForEach(Appearance.allCases) { Text($0.label).tag($0.rawValue) }
-                    }
-                    .pickerStyle(.segmented)
-                }
                 Section {
-                    LabeledContent("Version", value: Bundle.main.shortVersion)
-                    LabeledContent("Protocol", value: "v1")
+                    LabeledContent("Version") {
+                        Text(Bundle.main.shortVersion)
+                            .font(HelmFont.mono(.callout))
+                            .foregroundStyle(HelmColor.textSecondary)
+                    }
+                    LabeledContent("Protocol") {
+                        Text("v1")
+                            .font(HelmFont.mono(.callout))
+                            .foregroundStyle(HelmColor.textSecondary)
+                    }
+                } header: {
+                    HelmSectionHeader(title: "About")
                 }
+                .foregroundStyle(HelmColor.textPrimary)
+                .helmRow()
             }
         }
+        .helmScreen()
+        .tint(HelmColor.lime)
         .navigationTitle(isOnboarding ? "Welcome" : "Settings")
         .navigationBarTitleDisplayMode(isOnboarding ? .large : .inline)
         .toolbar {
             if !isOnboarding {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                        .foregroundStyle(HelmColor.textSecondary)
+                }
             }
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pkcs12, .data]) { result in
@@ -215,18 +263,21 @@ struct SettingsView: View {
 
 private struct OnboardingHeader: View {
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "steeringwheel")
-                .font(.system(size: 52, weight: .regular))
-                .foregroundStyle(.tint)
-                .padding(.top, 8)
+        VStack(spacing: HelmSpace.md) {
+            HelmMark(size: 76)
+                .padding(.top, HelmSpace.sm)
+                .padding(.bottom, HelmSpace.xs)
             Text("Helm")
-                .font(.title.weight(.semibold))
+                .font(.system(.title, design: .default, weight: .bold))
+                .tracking(-0.6)
+                .foregroundStyle(HelmColor.textPrimary)
             Text("Chat with the coding harnesses on your server. Enter your helmd URL and token. Off WireGuard, use the https URL and import your client certificate.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(HelmColor.textSecondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .padding(.bottom, HelmSpace.sm)
         .frame(maxWidth: .infinity)
     }
 }

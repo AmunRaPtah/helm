@@ -7,58 +7,109 @@ struct TmuxListView: View {
     @State private var sessions: [TmuxSession] = []
     @State private var reaper: ReaperState?
     @State private var error: String?
+    @State private var loaded = false
 
     var body: some View {
         List {
             if let error {
-                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(HelmColor.amber)
+                    .helmRow()
             }
             if let r = reaper {
-                Section {
-                    Toggle("Auto-kill idle sessions", isOn: Binding(
-                        get: { r.enabled },
-                        set: { v in saveReaper(enabled: v) }))
-                    Stepper(value: Binding(
-                        get: { r.idleHours },
-                        set: { v in saveReaper(idleHours: v) }), in: 1...336, step: 1) {
-                        Text("After \(Int(r.idleHours))h idle")
-                    }
-                    Toggle("Include non-Helm sessions", isOn: Binding(
-                        get: { r.includeNonHelm },
-                        set: { v in saveReaper(includeNonHelm: v) }))
-                    Button(role: .destructive) { runReaper() } label: {
-                        Text(r.candidates.isEmpty ? "No stale sessions" : "Kill \(r.candidates.count) stale now")
-                    }
-                    .disabled(r.candidates.isEmpty)
-                } header: {
-                    Text("Auto-kill")
-                } footer: {
-                    Text("Checked every 15 min. Attached sessions and \"main\" are never killed. Killed chats can be resumed.")
-                }
+                reaperSection(r)
             }
-            ForEach(sessions) { s in
-                NavigationLink {
-                    TmuxCaptureView(name: s.name)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: s.isHelm ? "bubble.left.and.text.bubble.right" : "rectangle.split.3x1")
-                            .foregroundStyle(s.isHelm ? Color.accentColor : .secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(s.name).font(.subheadline.weight(.medium)).monospaced()
-                            Text("\(s.windows) window\(s.windows == 1 ? "" : "s")\(s.attached ? " · attached" : "")\(s.idleLabel.map { " · " + $0 } ?? "")")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+            if !loaded && sessions.isEmpty && error == nil {
+                ForEach(0..<4, id: \.self) { _ in SkeletonRow().helmRow() }
+            }
+            if loaded && sessions.isEmpty && error == nil {
+                HelmEmptyState(title: "No tmux sessions",
+                               message: "Nothing is running in tmux on the box right now.",
+                               systemImage: "rectangle.split.3x1")
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
+            Section {
+                ForEach(sessions) { s in
+                    NavigationLink {
+                        TmuxCaptureView(name: s.name)
+                    } label: {
+                        sessionLabel(s)
                     }
+                    .swipeActions {
+                        Button("Kill", role: .destructive) { kill(s.name) }
+                    }
+                    .helmRow()
                 }
-                .swipeActions {
-                    Button("Kill", role: .destructive) { kill(s.name) }
+            } header: {
+                if !sessions.isEmpty {
+                    HelmSectionHeader(title: "Sessions", trailing: "\(sessions.count)")
                 }
             }
         }
+        .helmScreen()
         .navigationTitle("tmux")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
         .task { await load() }
+    }
+
+    private func reaperSection(_ r: ReaperState) -> some View {
+        Section {
+            Toggle("Auto-kill idle sessions", isOn: Binding(
+                get: { r.enabled },
+                set: { v in saveReaper(enabled: v) }))
+                .tint(HelmColor.lime)
+                .helmRow()
+            Stepper(value: Binding(
+                get: { r.idleHours },
+                set: { v in saveReaper(idleHours: v) }), in: 1...336, step: 1) {
+                HStack(spacing: 4) {
+                    Text("After")
+                    Text("\(Int(r.idleHours))h")
+                        .font(HelmFont.mono(.body, weight: .medium))
+                        .monospacedDigit()
+                    Text("idle")
+                }
+            }
+            .helmRow()
+            Toggle("Include non-Helm sessions", isOn: Binding(
+                get: { r.includeNonHelm },
+                set: { v in saveReaper(includeNonHelm: v) }))
+                .tint(HelmColor.lime)
+                .helmRow()
+            Button(role: .destructive) { runReaper() } label: {
+                Text(r.candidates.isEmpty ? "No stale sessions" : "Kill \(r.candidates.count) stale now")
+                    .foregroundStyle(r.candidates.isEmpty ? HelmColor.textTertiary : HelmColor.red)
+            }
+            .disabled(r.candidates.isEmpty)
+            .helmRow()
+        } header: {
+            HelmSectionHeader(title: "Auto-kill")
+        } footer: {
+            Text("Checked every 15 min. Attached sessions and \"main\" are never killed. Killed chats can be resumed.")
+                .foregroundStyle(HelmColor.textTertiary)
+        }
+    }
+
+    private func sessionLabel(_ s: TmuxSession) -> some View {
+        HStack(spacing: HelmSpace.md) {
+            Image(systemName: s.isHelm ? "bubble.left.and.text.bubble.right" : "rectangle.split.3x1")
+                .font(.callout)
+                .foregroundStyle(s.isHelm ? HelmColor.lime : HelmColor.textTertiary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(s.name)
+                    .font(HelmFont.mono(.subheadline, weight: .medium))
+                    .foregroundStyle(HelmColor.textPrimary)
+                Text("\(s.windows) window\(s.windows == 1 ? "" : "s")\(s.attached ? " · attached" : "")\(s.idleLabel.map { " · " + $0 } ?? "")")
+                    .font(HelmFont.mono(.caption2))
+                    .foregroundStyle(HelmColor.textTertiary)
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     private func load() async {
@@ -68,6 +119,7 @@ struct TmuxListView: View {
             error = nil
         }
         catch { self.error = APIClient.describe(error) }
+        loaded = true
     }
 
     private func saveReaper(enabled: Bool? = nil, idleHours: Double? = nil, includeNonHelm: Bool? = nil) {
@@ -116,36 +168,38 @@ struct TmuxCaptureView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(text.isEmpty ? "…" : text)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(HelmFont.mono(.caption))
+                        .foregroundStyle(text.isEmpty ? HelmColor.textTertiary : HelmColor.textPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
-                        .padding(12)
+                        .padding(HelmSpace.md)
                         .id("bottom")
                 }
+                .background(HelmColor.obsidian)
                 .onChange(of: text) { _, _ in
-                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                    withHelmAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
             if let error {
-                Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal)
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(HelmColor.amber)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, HelmSpace.md)
+                    .padding(.vertical, HelmSpace.xs)
             }
-            HStack(spacing: 8) {
-                TextField("send keys…", text: $keys)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .onSubmit(send)
-                Button { send() } label: { Image(systemName: "paperplane.fill") }
-                    .disabled(keys.isEmpty)
-            }
-            .padding(10)
-            .background(.bar)
+            sendBar
         }
+        .background(HelmColor.obsidian.ignoresSafeArea())
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            Button { autoRefresh.toggle() } label: {
-                Image(systemName: autoRefresh ? "pause.circle" : "play.circle")
+            Button { Haptics.tap(); autoRefresh.toggle() } label: {
+                HStack(spacing: 6) {
+                    if autoRefresh { PulseDot(color: HelmColor.lime, size: 6) }
+                    Image(systemName: autoRefresh ? "pause.circle" : "play.circle")
+                        .foregroundStyle(autoRefresh ? HelmColor.lime : HelmColor.textSecondary)
+                }
             }
         }
         .task(id: autoRefresh) {
@@ -154,6 +208,34 @@ struct TmuxCaptureView: View {
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
             }
             if !autoRefresh { await load() }
+        }
+    }
+
+    private var sendBar: some View {
+        HStack(spacing: HelmSpace.sm) {
+            Text("›")
+                .font(HelmFont.mono(.body, weight: .bold))
+                .foregroundStyle(HelmColor.lime)
+            TextField("send keys…", text: $keys)
+                .font(HelmFont.mono(.callout))
+                .foregroundStyle(HelmColor.textPrimary)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .onSubmit(send)
+            Button { send() } label: {
+                Image(systemName: "paperplane.fill")
+                    .foregroundStyle(keys.isEmpty ? HelmColor.textTertiary : HelmColor.lime)
+            }
+            .disabled(keys.isEmpty)
+        }
+        .padding(.horizontal, HelmSpace.md)
+        .padding(.vertical, 10)
+        .helmCard(radius: HelmRadius.control, fill: HelmColor.raised)
+        .padding(.horizontal, HelmSpace.sm)
+        .padding(.vertical, HelmSpace.sm)
+        .background(HelmColor.surface)
+        .overlay(alignment: .top) {
+            Rectangle().fill(HelmColor.hairline).frame(height: 1)
         }
     }
 

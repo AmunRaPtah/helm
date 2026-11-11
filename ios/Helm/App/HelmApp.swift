@@ -3,18 +3,24 @@ import SwiftUI
 @main
 struct HelmApp: App {
     @State private var store = AppStore()
-    @AppStorage("helm.appearance") private var appearance = Appearance.dark.rawValue
+
+    init() {
+        HelmAppearance.install()
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(store)
-                .preferredColorScheme(Appearance(rawValue: appearance)?.colorScheme)
+                .preferredColorScheme(.dark)
+                .tint(HelmColor.lime)
                 .onOpenURL { FileInbox.shared.receive($0) }
         }
     }
 }
 
+/// Kept for stored-preference compatibility. Helm is dark-only now: the
+/// instrument-panel palette is designed for obsidian and the mark is steel-white.
 enum Appearance: String, CaseIterable, Identifiable {
     case system, dark, light
     var id: String { rawValue }

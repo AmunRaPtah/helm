@@ -48,18 +48,31 @@ struct UserBubble: View {
                 if !attachments.isEmpty {
                     ForEach(attachments, id: \.self) { a in
                         Label((a as NSString).lastPathComponent, systemImage: "paperclip")
-                            .font(.caption)
+                            .font(HelmFont.mono(.caption2, weight: .medium))
+                            .foregroundStyle(HelmColor.textSecondary)
                             .lineLimit(1)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
-                            .background(Color(.tertiarySystemFill), in: Capsule())
+                            .background(Capsule().fill(HelmColor.raised))
+                            .overlay(Capsule().strokeBorder(HelmColor.hairline, lineWidth: 1))
                     }
                 }
                 if !text.isEmpty {
                     Text(InlineText.attributed(text))
+                        .foregroundStyle(HelmColor.textPrimary)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(accent.opacity(0.22), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .background {
+                            UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18,
+                                                   bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous)
+                                .fill(LinearGradient(colors: [HelmColor.raisedHigh, HelmColor.raised],
+                                                     startPoint: .top, endPoint: .bottom))
+                        }
+                        .overlay {
+                            UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18,
+                                                   bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous)
+                                .stroke(HelmColor.hairlineStrong, lineWidth: 1)
+                        }
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -80,21 +93,30 @@ struct PendingBubble: View {
             UserBubble(text: message.text, attachments: message.attachments, accent: accent, dimmed: true)
             if message.failed {
                 HStack(spacing: 12) {
-                    Text("Not sent").foregroundStyle(.red)
-                    Button("Retry", action: onRetry)
+                    Label("Not sent", systemImage: "exclamationmark.circle.fill").foregroundStyle(HelmColor.red)
+                    Button("Retry") { Haptics.tap(); onRetry() }
+                        .foregroundStyle(HelmColor.lime)
                     Button("Discard", role: .destructive, action: onDiscard)
+                        .foregroundStyle(HelmColor.textSecondary)
                 }
-                .font(.caption)
+                .font(.system(.caption, weight: .medium))
                 .buttonStyle(.borderless)
             } else if message.queueId != nil {
                 HStack(spacing: 12) {
-                    Label("Queued", systemImage: "clock").foregroundStyle(.secondary)
+                    HStack(spacing: 5) {
+                        PulseDot(color: HelmColor.amber, size: 5, isActive: true)
+                        Text("QUEUED").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(0.6)
+                    }
+                    .foregroundStyle(HelmColor.amber)
                     Button("Cancel", role: .destructive, action: onCancel)
+                        .foregroundStyle(HelmColor.textSecondary)
                 }
-                .font(.caption)
+                .font(.system(.caption, weight: .medium))
                 .buttonStyle(.borderless)
             } else {
-                Text("Sending\u{2026}").font(.caption2).foregroundStyle(.secondary)
+                Text("Sending\u{2026}")
+                    .font(HelmFont.mono(.caption2))
+                    .foregroundStyle(HelmColor.textTertiary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -108,39 +130,48 @@ struct ThinkingBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+                Haptics.tap()
+                withHelmAnimation { expanded.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "brain")
-                    Text("Thinking")
+                        .imageScale(.small)
+                    Text("THINKING")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .tracking(0.8)
                     Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
+                        .font(.system(size: 9, weight: .bold))
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                     Spacer()
                 }
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(HelmColor.textTertiary)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            if expanded {
-                Text(text)
-                    .font(.footnote)
-                    .italic()
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 10)
-                    .overlay(alignment: .leading) {
-                        Rectangle().fill(.quaternary).frame(width: 2)
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let first = text.split(separator: "\n").first {
-                Text(first)
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+            Group {
+                if expanded {
+                    Text(text)
+                        .font(.footnote)
+                        .italic()
+                        .foregroundStyle(HelmColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .transition(.opacity)
+                } else if let first = text.split(separator: "\n").first {
+                    Text(first)
+                        .font(.footnote)
+                        .foregroundStyle(HelmColor.textTertiary)
+                        .lineLimit(1)
+                        .transition(.opacity)
+                }
+            }
+            .padding(.leading, 10)
+            .overlay(alignment: .leading) {
+                Rectangle().fill(HelmColor.hairlineStrong).frame(width: 1.5)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(expanded ? "Collapse" : "Expand")
     }
 }
 
@@ -153,13 +184,14 @@ struct SystemLineView: View {
             Text(item.text)
                 .multilineTextAlignment(.center)
         }
-        .font(.caption)
-        .foregroundStyle(item.style == .error ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
+        .font(HelmFont.mono(.caption2, weight: item.style == .error ? .medium : .regular))
+        .foregroundStyle(item.style == .error ? HelmColor.red : HelmColor.textTertiary)
         .padding(.horizontal, item.style == .error ? 10 : 0)
         .padding(.vertical, item.style == .error ? 6 : 0)
         .background {
             if item.style == .error {
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.red.opacity(0.12))
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(HelmColor.red.opacity(0.10))
+                RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(HelmColor.red.opacity(0.3), lineWidth: 0.75)
             }
         }
         .frame(maxWidth: .infinity)

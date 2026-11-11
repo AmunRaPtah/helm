@@ -37,25 +37,46 @@ struct FileBrowserView: View {
     var body: some View {
         List {
             if let error {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.footnote).foregroundStyle(.red)
+                Label {
+                    Text(error).font(HelmFont.mono(.caption))
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                }
+                .font(.footnote)
+                .foregroundStyle(HelmColor.red)
+                .listRowBackground(HelmColor.red.opacity(0.08))
             }
             if listing == nil && error == nil {
-                ProgressView().frame(maxWidth: .infinity)
+                ForEach(0..<8, id: \.self) { _ in
+                    SkeletonRow()
+                        .helmRow()
+                }
             }
             if let listing {
                 if visible.isEmpty {
-                    Text(filter.isEmpty ? "Empty folder" : "No matches")
-                        .foregroundStyle(.secondary)
+                    HelmEmptyState(title: filter.isEmpty ? "Empty folder" : "No matches",
+                                   message: filter.isEmpty ? "Upload files or photos with the + menu." : "Nothing here matches \u{201C}\(filter)\u{201D}.",
+                                   systemImage: filter.isEmpty ? "folder" : "magnifyingglass")
+                        .frame(maxWidth: .infinity)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
-                ForEach(visible) { e in row(e) }
+                ForEach(visible) { e in
+                    row(e)
+                        .helmRow()
+                }
                 if !listing.entries.isEmpty {
                     Text(summary(listing))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(HelmFont.mono(.caption2))
+                        .foregroundStyle(HelmColor.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
                         .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
             }
         }
+        .helmScreen()
+        .tint(HelmColor.lime)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $filter, placement: .navigationBarDrawer(displayMode: .automatic))
@@ -120,38 +141,57 @@ struct FileBrowserView: View {
             if e.isDir {
                 NavigationLink { FileBrowserView(path: e.path) } label: { label(e) }
             } else {
-                Button { Task { await preview(e) } } label: { label(e) }
-                    .foregroundStyle(.primary)
+                Button {
+                    Haptics.tap()
+                    Task { await preview(e) }
+                } label: { label(e) }
+                    .foregroundStyle(HelmColor.textPrimary)
             }
         }
         .contextMenu { menu(e) }
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) { deleting = e } label: { Label("Delete", systemImage: "trash") }
+                .tint(HelmColor.red)
         }
         .swipeActions(edge: .leading) {
             Button { download(e) } label: { Label("Download", systemImage: "arrow.down.circle") }
-                .tint(.accentColor)
+                .tint(HelmColor.limeDeep)
         }
     }
 
     private func label(_ e: FsEntry) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: HelmSpace.md) {
             Image(systemName: e.isDir ? "folder.fill" : PickedFile.icon(for: e.name))
-                .font(.title3)
-                .foregroundStyle(e.isDir ? Color.accentColor : .secondary)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(e.isDir ? HelmColor.lime.opacity(0.75) : HelmColor.textSecondary)
+                .frame(width: 34, height: 34)
+                .background(RoundedRectangle(cornerRadius: HelmRadius.chip, style: .continuous).fill(Color.white.opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: HelmRadius.chip, style: .continuous).strokeBorder(HelmColor.hairline, lineWidth: 0.5))
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
-                    Text(e.name).lineLimit(1).truncationMode(.middle)
-                    if e.isLink { Image(systemName: "arrow.turn.up.right").font(.caption2).foregroundStyle(.secondary) }
+                    Text(e.name)
+                        .font(HelmFont.body)
+                        .foregroundStyle(HelmColor.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if e.isLink {
+                        Image(systemName: "arrow.turn.up.right")
+                            .font(.caption2)
+                            .foregroundStyle(HelmColor.textTertiary)
+                    }
                 }
                 Text(e.isDir ? e.mtime.formatted(.relative(presentation: .named))
                              : "\(e.sizeText) \u{00B7} \(e.mtime.formatted(.relative(presentation: .named)))")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(HelmFont.mono(.caption2))
+                    .foregroundStyle(HelmColor.textTertiary)
+                    .lineLimit(1)
             }
             Spacer(minLength: 0)
-            if previewing == e.path { ProgressView().controlSize(.small) }
+            if previewing == e.path {
+                ProgressView().controlSize(.small).tint(HelmColor.lime)
+            }
         }
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
     }
 
@@ -172,13 +212,19 @@ struct FileBrowserView: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button { showTransfers = true } label: {
+            Button {
+                Haptics.tap()
+                showTransfers = true
+            } label: {
                 Image(systemName: transfers.activeCount > 0 ? "arrow.up.arrow.down.circle.fill" : "arrow.up.arrow.down.circle")
                     .overlay(alignment: .topTrailing) {
                         if transfers.activeCount > 0 {
                             Text("\(transfers.activeCount)")
-                                .font(.caption2.bold()).foregroundStyle(.white)
-                                .padding(3).background(Circle().fill(.red))
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundStyle(HelmColor.onLime)
+                                .padding(3)
+                                .frame(minWidth: 15)
+                                .background(Circle().fill(HelmColor.lime))
                                 .offset(x: 8, y: -8)
                         }
                     }

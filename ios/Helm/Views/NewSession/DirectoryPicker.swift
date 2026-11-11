@@ -15,53 +15,109 @@ struct DirectoryPicker: View {
     var body: some View {
         List {
             if path == startPath || listing == nil, !Recents.all.isEmpty, filter.isEmpty {
-                Section("Recent") {
+                Section {
                     ForEach(Recents.all, id: \.self) { r in
                         Button { choose(r) } label: {
-                            Label(r, systemImage: "clock.arrow.circlepath")
-                                .font(.callout.monospaced())
-                                .lineLimit(1)
-                                .truncationMode(.head)
+                            Label {
+                                Text(r)
+                                    .font(HelmFont.mono(.callout))
+                                    .foregroundStyle(HelmColor.textPrimary)
+                                    .lineLimit(1)
+                                    .truncationMode(.head)
+                            } icon: {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .foregroundStyle(HelmColor.textTertiary)
+                            }
                         }
                     }
+                } header: {
+                    HelmSectionHeader(title: "Recent")
                 }
+                .helmRow()
             }
             Section {
                 if path != "/" {
-                    Button { Task { await load(parent(of: path)) } } label: {
-                        Label("..", systemImage: "arrow.turn.left.up")
+                    Button {
+                        Haptics.tap()
+                        Task { await load(parent(of: path)) }
+                    } label: {
+                        Label {
+                            Text("..")
+                                .font(HelmFont.mono(.body, weight: .medium))
+                                .foregroundStyle(HelmColor.textSecondary)
+                        } icon: {
+                            Image(systemName: "arrow.turn.left.up")
+                                .foregroundStyle(HelmColor.textTertiary)
+                        }
                     }
                 }
                 if let error {
-                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red).font(.footnote)
+                    Label {
+                        Text(error).font(HelmFont.mono(.caption))
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                    }
+                    .foregroundStyle(HelmColor.red)
+                    .font(.footnote)
+                }
+                if loading && listing == nil {
+                    ForEach(0..<6, id: \.self) { _ in
+                        SkeletonRow()
+                    }
                 }
                 ForEach(visible) { e in
-                    Button { Task { await load(join(path, e.name)) } } label: {
-                        HStack {
-                            Label(e.name, systemImage: "folder")
+                    Button {
+                        Haptics.tap()
+                        Task { await load(join(path, e.name)) }
+                    } label: {
+                        HStack(spacing: HelmSpace.md) {
+                            Image(systemName: "folder.fill")
+                                .font(.body)
+                                .foregroundStyle(HelmColor.textSecondary.opacity(0.8))
+                                .frame(width: 24)
+                            Text(e.name)
+                                .font(HelmFont.body)
+                                .foregroundStyle(HelmColor.textPrimary)
+                                .lineLimit(1)
                             Spacer()
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(HelmColor.textTertiary)
                         }
                     }
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(HelmColor.textPrimary)
+                }
+                if listing != nil && visible.isEmpty && error == nil {
+                    HelmEmptyState(title: filter.isEmpty ? "No subfolders" : "No matches",
+                                   message: filter.isEmpty ? "You can still use this folder." : "Nothing here matches \u{201C}\(filter)\u{201D}.",
+                                   systemImage: "folder")
+                        .frame(maxWidth: .infinity)
+                        .listRowBackground(Color.clear)
                 }
             } header: {
-                Text(path).font(.caption.monospaced()).textCase(nil)
+                Text(path)
+                    .font(HelmFont.mono(.caption, weight: .medium))
+                    .foregroundStyle(HelmColor.textTertiary)
+                    .textCase(nil)
+                    .lineLimit(1)
+                    .truncationMode(.head)
             }
+            .helmRow()
+        }
+        .helmScreen()
+        .tint(HelmColor.lime)
+        .refreshable {
+            guard !path.isEmpty else { return }
+            await load(path)
         }
         .searchable(text: $filter, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Filter")
-        .overlay { if loading && listing == nil { ProgressView() } }
         .navigationTitle((path as NSString).lastPathComponent.isEmpty ? "/" : (path as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
             Button { choose(path) } label: {
                 Label("Use this folder", systemImage: "checkmark")
-                    .frame(maxWidth: .infinity)
-                    .font(.headline)
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.large)
+            .buttonStyle(HelmPrimaryButtonStyle())
             .padding(.horizontal, 20)
             .padding(.bottom, 8)
             .disabled(path.isEmpty)

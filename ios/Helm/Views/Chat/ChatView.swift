@@ -26,15 +26,18 @@ struct ChatView: View {
                         ForEach(model.transcript.items) { item in
                             ChatItemView(item: item, accent: accent, isLive: model.isRunning)
                                 .id(item.id)
+                                .transition(HelmMotion.appear)
                         }
                         ForEach(model.pending) { p in
                             PendingBubble(message: p, accent: accent,
                                           onRetry: { Task { await model.retry(p) } },
                                           onDiscard: { model.discard(p) },
                                           onCancel: { Task { await model.cancelQueued(p) } })
+                            .transition(HelmMotion.appear)
                         }
                         if model.isRunning {
                             TypingIndicator(color: accent)
+                                .transition(HelmMotion.appear)
                         }
                         BottomSentinel()
                             .id("bottom")
@@ -42,7 +45,11 @@ struct ChatView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
                     .padding(.bottom, 8)
+                    .helmAnimation(HelmMotion.spring, value: model.transcript.items.count)
+                    .helmAnimation(HelmMotion.spring, value: model.pending.count)
+                    .helmAnimation(HelmMotion.spring, value: model.isRunning)
                 }
+                .helmScreen()
                 .coordinateSpace(name: "chatScroll")
                 .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
@@ -51,7 +58,7 @@ struct ChatView: View {
                 }
                 .onChange(of: scrollKey) {
                     guard atBottom else { return }
-                    withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                    withHelmAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
                 .onAppear {
                     Task {
@@ -62,27 +69,33 @@ struct ChatView: View {
                 .overlay(alignment: .bottom) {
                     if !atBottom {
                         JumpToBottomButton {
-                            withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                            Haptics.tap()
+                            withHelmAnimation(HelmMotion.spring) { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
                         .padding(.bottom, 10)
                         .transition(.scale.combined(with: .opacity))
                     }
                 }
-                .animation(.easeInOut(duration: 0.2), value: atBottom)
+                .helmAnimation(HelmMotion.spring, value: atBottom)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if model.isExited {
-                    ResumeBanner(isResuming: model.isResuming) { Task { await model.resume() } }
+                    ResumeBanner(isResuming: model.isResuming) { Haptics.tap(); Task { await model.resume() } }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 if let banner = model.banner {
                     ErrorBanner(text: banner) { model.banner = nil }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 ComposerView(model: model, accent: accent)
             }
+            .helmAnimation(HelmMotion.spring, value: model.isExited)
+            .helmAnimation(HelmMotion.spring, value: model.banner)
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(HelmColor.obsidian.opacity(0.85), for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 ChatTitle(session: model.session, state: model.state, phase: model.stream.phase)
@@ -151,6 +164,7 @@ struct ChatView: View {
             Button(role: .destructive) { confirmDelete = true } label: { Label("Delete", systemImage: "trash") }
         } label: {
             Image(systemName: "ellipsis.circle")
+                .foregroundStyle(HelmColor.textSecondary)
         }
     }
 }

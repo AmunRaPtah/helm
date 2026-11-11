@@ -26,18 +26,30 @@ struct PhoneFilesView: View {
                 Section {
                     Link(destination: URL(string: "shareddocuments://" + PhoneFiles.root.path)!) {
                         Label("Open in the Files app", systemImage: "folder.badge.gearshape")
+                            .foregroundStyle(HelmColor.lime)
                     }
                 } footer: {
                     Text("Downloads from the box land here. The Files app shows the same folder under On My iPhone \u{203A} Helm.")
+                        .foregroundStyle(HelmColor.textTertiary)
                 }
+                .helmRow()
             }
             Section {
                 if entries.isEmpty {
-                    Text("Nothing here yet").foregroundStyle(.secondary)
+                    HelmEmptyState(title: "Nothing here yet",
+                                   message: "Swipe right on a box file or folder to download it to this iPhone.",
+                                   systemImage: "iphone")
+                        .frame(maxWidth: .infinity)
+                        .listRowBackground(Color.clear)
                 }
-                ForEach(entries) { e in row(e) }
+                ForEach(entries) { e in
+                    row(e)
+                        .helmRow()
+                }
             }
         }
+        .helmScreen()
+        .tint(HelmColor.lime)
         .navigationTitle(isRoot ? "On this iPhone" : url.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: load)
@@ -74,7 +86,11 @@ struct PhoneFilesView: View {
             if e.isDir {
                 NavigationLink { PhoneFilesView(url: e.url) } label: { label(e) }
             } else {
-                Button { previewURL = e.url } label: { label(e) }.foregroundStyle(.primary)
+                Button {
+                    Haptics.tap()
+                    previewURL = e.url
+                } label: { label(e) }
+                    .foregroundStyle(HelmColor.textPrimary)
             }
         }
         .contextMenu {
@@ -88,25 +104,35 @@ struct PhoneFilesView: View {
         }
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) { deleting = e } label: { Label("Delete", systemImage: "trash") }
+                .tint(HelmColor.red)
         }
         .swipeActions(edge: .leading) {
-            Button { sending = e } label: { Label("Upload", systemImage: "arrow.up.circle") }.tint(.accentColor)
+            Button { sending = e } label: { Label("Upload", systemImage: "arrow.up.circle") }.tint(HelmColor.limeDeep)
         }
     }
 
     private func label(_ e: LocalEntry) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: HelmSpace.md) {
             Image(systemName: e.isDir ? "folder.fill" : PickedFile.icon(for: e.name))
-                .font(.title3)
-                .foregroundStyle(e.isDir ? Color.accentColor : .secondary)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(e.name).lineLimit(1).truncationMode(.middle)
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(e.isDir ? HelmColor.lime.opacity(0.75) : HelmColor.textSecondary)
+                .frame(width: 34, height: 34)
+                .background(RoundedRectangle(cornerRadius: HelmRadius.chip, style: .continuous).fill(Color.white.opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: HelmRadius.chip, style: .continuous).strokeBorder(HelmColor.hairline, lineWidth: 0.5))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(e.name)
+                    .font(HelmFont.body)
+                    .foregroundStyle(HelmColor.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Text(e.isDir ? e.mtime.formatted(.relative(presentation: .named))
                              : "\(ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file)) \u{00B7} \(e.mtime.formatted(.relative(presentation: .named)))")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(HelmFont.mono(.caption2))
+                    .foregroundStyle(HelmColor.textTertiary)
+                    .lineLimit(1)
             }
         }
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
     }
 
@@ -147,24 +173,57 @@ private struct SendToBoxView: View {
 
     var body: some View {
         List {
-            Section("Upload") {
-                Label(entry.name, systemImage: entry.isDir ? "folder" : "doc")
+            Section {
+                Label {
+                    Text(entry.name)
+                        .foregroundStyle(HelmColor.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } icon: {
+                    Image(systemName: entry.isDir ? "folder" : "doc")
+                        .foregroundStyle(HelmColor.textSecondary)
+                }
+            } header: {
+                HelmSectionHeader(title: "Upload")
             }
+            .helmRow()
             Section {
                 NavigationLink { DirectoryPicker(selection: $dir, startPath: dir) } label: {
-                    Label(dir, systemImage: "folder").font(.callout.monospaced())
-                        .lineLimit(1).truncationMode(.head)
+                    Label {
+                        Text(dir)
+                            .font(HelmFont.mono(.callout))
+                            .foregroundStyle(HelmColor.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    } icon: {
+                        Image(systemName: "folder")
+                            .foregroundStyle(HelmColor.lime.opacity(0.85))
+                    }
                 }
-            } header: { Text("Into box folder") } footer: {
+            } header: { HelmSectionHeader(title: "Into box folder") } footer: {
                 Text(entry.isDir ? "The whole folder is copied, subfolders included. If a folder with that name exists, the copy gets a -1 suffix."
                                  : "Existing files are never overwritten.")
+                    .foregroundStyle(HelmColor.textTertiary)
             }
+            .helmRow()
         }
+        .helmScreen()
+        .tint(HelmColor.lime)
         .navigationTitle("Upload to box")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
-            ToolbarItem(placement: .topBarTrailing) { Button("Upload") { send(dir) }.bold() }
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") { dismiss() }
+                    .foregroundStyle(HelmColor.textSecondary)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Upload") {
+                    Haptics.send()
+                    send(dir)
+                }
+                .bold()
+                .tint(HelmColor.lime)
+            }
         }
     }
 }
