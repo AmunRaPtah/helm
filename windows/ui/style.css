@@ -233,3 +233,18 @@ textarea { resize: none; }
 .toast.out { opacity: 0; }
 .side-foot .version { margin-left: auto; margin-right: 10px; }
 .lock-card .version { margin-top: 8px; color: var(--text3); }
+/* 1.1.0: reconnect banner, GPU burst, auto-kill, folder upload jobs */
+.state.starting { color: var(--amber); }
+.line.reconnect { max-width: 900px; margin: 10px auto 0; color: var(--amber); animation: pulse-soft 1.6s ease-in-out infinite; }
+@keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.ok-text { color: var(--lime); }
+.card pre.detail { margin: 8px 0 0; max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text3); }
+.card-actions { margin-top: 10px; }
+.reaper { display: flex; flex-direction: column; gap: 12px; padding: 20px; max-width: 640px; }
+.reaper .num { width: 70px; }
+.cands { margin: 0; padding: 8px 12px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.jobs { display: flex; flex-direction: column; gap: 6px; padding: 0 12px; }
+.jobs:empty { display: none; }
+.job { margin-top: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+.job-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.job-errs { margin: 6px 0 0; padding-left: 18px; max-height: 140px; overflow: auto; color: var(--red); }

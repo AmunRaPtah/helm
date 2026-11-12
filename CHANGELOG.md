@@ -10,6 +10,16 @@ was already released.
 
 Versions are `MAJOR.MINOR.PATCH`: patch for fixes, minor for features, major for breaking changes.
 
+## Windows 1.1.0 (2026-11-12)
+- New: when helmd restarts a dead runner to take your message, the chat shows "Reconnecting to
+  <harness>…" until it is idle or running, and the message waits as "Reconnecting…" instead of failing.
+- New: Box has GPU burst (warm, release, status) and Auto-kill (reaper settings, "Kill stale now") tabs.
+- New: Upload folder in Files (or drop a folder): uploads recursively into a new folder, with n/total
+  progress and per-file errors. Empty subfolders are recreated.
+- New: confirm before stopping a service, restarting helmd/caddy/WireGuard, or running a destructive
+  shell command (rm, kill, reboot, systemctl stop, …).
+- CI: `build-windows.yml` builds NSIS and MSI installers as artifacts (unsealed: no credentials in CI).
+
 ## iOS 1.2.0 (2026-11-12)
 - New: when helmd restarts a dead runner to take your message, the chat shows "Reconnecting to
   <harness>…" (amber) instead of "Working", and the message stays "Sending…" rather than failing.

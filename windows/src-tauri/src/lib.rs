@@ -179,22 +179,20 @@ async fn api(
     into_json(req.send().await.map_err(|e| format!("Network: {e}"))?).await
 }
 
-/// Multipart upload of a local file. `fields` become extra form fields.
-#[tauri::command]
-async fn upload(
-    endpoint: String,
-    local_path: String,
-    fields: HashMap<String, String>,
-    state: State<'_, AppState>,
+/// Stream one local file as the multipart `file` part to `target`.
+async fn upload_file(
+    c: &Conn,
+    target: &str,
+    local_path: &std::path::Path,
+    fields: Vec<(String, String)>,
 ) -> Result<Value, String> {
-    let c = conn(&state).await?;
-    let target = url(&c, &endpoint)?;
+    let shown = local_path.display();
     // Stream the file instead of reading it whole into memory: a multi-GB
     // upload used to need that much RAM in the app.
-    let file = tokio::fs::File::open(&local_path).await.map_err(|e| format!("{local_path}: {e}"))?;
-    let meta = file.metadata().await.map_err(|e| format!("{local_path}: {e}"))?;
+    let file = tokio::fs::File::open(local_path).await.map_err(|e| format!("{shown}: {e}"))?;
+    let meta = file.metadata().await.map_err(|e| format!("{shown}: {e}"))?;
     if !meta.is_file() {
-        return Err(format!("{local_path}: not a file"));
+        return Err(format!("{shown}: not a file"));
     }
     let len = meta.len();
     let body_stream = futures_util::stream::try_unfold(file, |mut f| async move {
@@ -207,7 +205,7 @@ async fn upload(
         buf.truncate(n);
         Ok(Some((buf, f)))
     });
-    let name = std::path::Path::new(&local_path)
+    let name = local_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "upload".into());
@@ -225,6 +223,141 @@ async fn upload(
         .await
         .map_err(|e| format!("Network: {e}"))?;
     into_json(resp).await
+}
+
+/// Multipart upload of a local file. `fields` become extra form fields.
+#[tauri::command]
+async fn upload(
+    endpoint: String,
+    local_path: String,
+    fields: HashMap<String, String>,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let c = conn(&state).await?;
+    let target = url(&c, &endpoint)?;
+    upload_file(&c, &target, std::path::Path::new(&local_path), fields.into_iter().collect()).await
+}
+
+/// Files and (empty-or-not) subfolders under `root`, as `/`-joined paths
+/// relative to it. Symlinks are not followed, so a link loop can't recurse
+/// forever; linked files are uploaded, linked folders are skipped.
+fn walk_folder(root: &std::path::Path) -> Result<(Vec<(String, std::path::PathBuf)>, Vec<String>), String> {
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .filter_map(|e| e.ok())
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name().to_string_lossy().to_string();
+            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let ft = match e.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                dirs.push(child_rel.clone());
+                stack.push((e.path(), child_rel));
+            } else if ft.is_file() || (ft.is_symlink() && e.path().is_file()) {
+                files.push((child_rel, e.path()));
+            }
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    dirs.sort();
+    Ok((files, dirs))
+}
+
+/// Upload a local folder recursively into box folder `remote_dir`.
+/// Creates `<remote_dir>/<name>` (made unique, so two uploads never merge),
+/// then one /box/upload per file with `rel`. Progress arrives as
+/// `folder-upload` events `{job, done, total, rel, error?}`.
+#[tauri::command]
+async fn upload_folder(
+    job: String,
+    local_dir: String,
+    remote_dir: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let c = conn(&state).await?;
+    let root = std::path::PathBuf::from(&local_dir);
+    let name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| format!("{local_dir}: not a folder"))?;
+    let walk_root = root.clone();
+    let (files, dirs) = tokio::task::spawn_blocking(move || walk_folder(&walk_root))
+        .await
+        .map_err(|e| e.to_string())??;
+    let mkdir = c
+        .http
+        .post(url(&c, "/box/fs/mkdir")?)
+        .bearer_auth(&c.token)
+        .timeout(Duration::from_secs(60))
+        .json(&json!({"path": format!("{}/{}", remote_dir.trim_end_matches('/'), name), "unique": true}))
+        .send()
+        .await
+        .map_err(|e| format!("Network: {e}"))?;
+    let made = into_json(mkdir).await?;
+    let dest = made
+        .get("path")
+        .and_then(|p| p.as_str())
+        .ok_or("mkdir returned no path")?
+        .to_string();
+    let target = url(&c, "/box/upload")?;
+    let total = files.len();
+    let mut failed = Vec::new();
+    let mut uploaded = 0usize;
+    let mut bytes = 0u64;
+    let _ = app.emit("folder-upload", json!({"job": job, "done": 0, "total": total}));
+    for (i, (rel, path)) in files.iter().enumerate() {
+        // Locking mid-upload stops the job instead of carrying on with
+        // credentials the UI believes are gone.
+        if state.conn.lock().await.is_none() {
+            return Err("locked".into());
+        }
+        let fields = vec![("dir".to_string(), dest.clone()), ("rel".to_string(), rel.clone())];
+        let r = upload_file(&c, &target, path, fields).await;
+        let error = match &r {
+            Ok(v) => {
+                uploaded += 1;
+                bytes += v.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
+                None
+            }
+            Err(e) => {
+                failed.push(json!({"rel": rel, "error": e}));
+                Some(e.clone())
+            }
+        };
+        let _ = app.emit("folder-upload", json!({"job": job, "done": i + 1, "total": total, "rel": rel, "error": error}));
+    }
+    // Folders with no files in them would otherwise not exist on the box.
+    for d in dirs {
+        let has_file = files.iter().any(|(rel, _)| rel.starts_with(&format!("{d}/")));
+        if has_file {
+            continue;
+        }
+        let ok = match c
+            .http
+            .post(url(&c, "/box/fs/mkdir")?)
+            .bearer_auth(&c.token)
+            .timeout(Duration::from_secs(60))
+            .json(&json!({"path": format!("{dest}/{d}")}))
+            .send()
+            .await
+        {
+            Ok(resp) => into_json(resp).await.is_ok(),
+            Err(_) => false,
+        };
+        if !ok {
+            failed.push(json!({"rel": format!("{d}/"), "error": "could not create folder"}));
+        }
+    }
+    Ok(json!({"path": dest, "total": total, "uploaded": uploaded, "bytes": bytes, "failed": failed}))
 }
 
 /// Stream a box file (or zipped folder) to a local path.
@@ -363,7 +496,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![unlock, lock, api, upload, download, ws_open, ws_send, ws_close])
+        .invoke_handler(tauri::generate_handler![unlock, lock, api, upload, upload_folder, download, ws_open, ws_send, ws_close])
         .run(tauri::generate_context!())
         .expect("error while running Helm");
 }

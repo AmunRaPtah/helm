@@ -7,6 +7,7 @@ const invoke = T.core.invoke;
 const $ = (id) => document.getElementById(id);
 const md = window.renderMarkdown;
 const esc = window.escapeHtml;
+const U = window.HelmUtil;
 
 const api = (method, path, body = null, timeoutSecs = null) => invoke("api", { method, path, body, timeoutSecs });
 const enc = encodeURIComponent;
@@ -414,7 +415,7 @@ function flush() {
   }
   c.dirty.clear();
   if (c.pendingDirty) { renderPending(); c.pendingDirty = false; }
-  $("typing").classList.toggle("hidden", c.session.state !== "running");
+  renderLiveState();
   if (c.following) scrollToEnd();
 }
 
@@ -456,7 +457,7 @@ function renderPending() {
         ] : p.state === "queued" ? [
           h("span", {}, "Queued"),
           h("button", { class: "linkbtn", onclick: () => api("DELETE", `/sessions/${c.id}/queue/${p.queue_id}`).catch(fail) }, "Cancel"),
-        ] : h("span", {}, "Sending…")))));
+        ] : h("span", {}, c.session.state === "starting" ? "Reconnecting…" : "Sending…")))));
 }
 
 // --- scroll: follow new output only while the reader is at the bottom ---
@@ -505,7 +506,23 @@ function renderChatHead() {
   st.className = `state ${s.state}`;
   $("act-interrupt").classList.toggle("hidden", s.state !== "running");
   $("act-resume").classList.toggle("hidden", s.state !== "exited");
-  $("typing").classList.toggle("hidden", s.state !== "running");
+  renderLiveState();
+}
+
+// Typing dots while a turn runs; "Reconnecting to X…" while helmd revives a
+// dead runner (state "starting" until the runner reports idle/running).
+let lastLiveState = null;
+function renderLiveState() {
+  const c = chat;
+  const state = c ? c.session.state : null;
+  $("typing").classList.toggle("hidden", state !== "running");
+  const txt = c ? U.reconnectText(state, hstyle(c.session.harness)[1]) : null;
+  const rc = $("reconnect");
+  rc.textContent = txt || "";
+  rc.classList.toggle("hidden", !txt);
+  // Pending bubbles say "Reconnecting…" instead of "Sending…" meanwhile.
+  if (c && state !== lastLiveState && c.pending.some((p) => p.state === "sending")) renderPending();
+  lastLiveState = state;
 }
 
 $("act-interrupt").onclick = () => chat && api("POST", `/sessions/${chat.id}/interrupt`).catch(fail);
@@ -601,8 +618,14 @@ async function sendPending(p) {
   p.state = "sending";
   renderPending();
   try {
-    const r = await api("POST", `/sessions/${c.id}/messages`, { text: p.text, attachments: p.attachments, client_id: p.client_id });
+    // A dead runner is revived on send: helmd starts it and waits up to 30s
+    // for it to take the message, so leave plenty of headroom before calling
+    // the send failed.
+    const r = await api("POST", `/sessions/${c.id}/messages`, { text: p.text, attachments: p.attachments, client_id: p.client_id }, 120);
     if (r && r.queued && p.state === "sending") p.state = "queued";
+    // The stream normally delivers the "starting" status first; if it is
+    // reconnecting itself, show the revive from the response instead.
+    if (r && r.revived && chat === c && c.session.state === "exited") { c.session.state = "starting"; renderChatHead(); }
   } catch (e) {
     p.state = "failed";
     fail(e);
@@ -708,7 +731,7 @@ function showBoxTab(tab) {
   timers.delete(boxTimer);
   const body = $("box-body");
   body.replaceChildren();
-  ({ system: boxSystem, tmux: boxTmux, services: boxServices, shell: boxShell })[tab](body);
+  ({ system: boxSystem, tmux: boxTmux, services: boxServices, burst: boxBurst, reaper: boxReaper, shell: boxShell })[tab](body);
 }
 const boxLive = (tab) => unlocked && view === "box" && boxTab === tab;
 
@@ -801,7 +824,9 @@ function boxServices(body) {
         h("td", { class: "mono" }, s.name),
         h("td", {}, h("span", { class: `pill ${s.active === "active" ? "ok" : "bad"}` }, s.active)),
         h("td", { class: "small muted" }, s.enabled),
-        h("td", { class: "right" }, ["start", "stop", "restart"].map((a) => h("button", { class: "btn ghost small", onclick: async () => {
+        h("td", { class: "right" }, ["start", "stop", "restart"].map((a) => h("button", { class: `btn ghost small ${a === "stop" ? "danger" : ""}`, onclick: async () => {
+          const warn = U.serviceConfirm(s.name, a);
+          if (warn && !(await confirmBox(`${a[0].toUpperCase()}${a.slice(1)} ${s.name}?`, warn, a[0].toUpperCase() + a.slice(1)))) return;
           try { const res = await api("POST", `/box/services/${enc(s.name)}/${a}`, null, 90); if (res.error) toast(res.error, "bad"); else toast(`${s.name}: ${res.active}`); load(); } catch (e) { fail(e); }
         } }, a))))));
     } catch (e) { tbl.replaceChildren(h("tr", {}, h("td", { class: "err" }, String(e)))); }
@@ -818,7 +843,8 @@ function boxShell(body) {
   let hi = -1;
   const go = async () => {
     const c = cmd.value.trim();
-    if (!c) return;
+    if (!c || run.disabled) return;
+    if (U.riskyCommand(c) && !(await confirmBox("Run this on the box?", h("code", { class: "mono" }, c), "Run"))) return;
     hist.unshift(c); hi = -1;
     run.disabled = true;
     out.textContent = `$ ${c}\n…`;
@@ -838,6 +864,84 @@ function boxShell(body) {
   });
   body.append(h("div", { class: "row pad" }, cwd, cmd, run), out);
   setTimeout(() => cmd.focus(), 30);
+}
+
+function boxBurst(body) {
+  const wrap = h("div", { class: "cards" }, h("p", { class: "muted" }, "Checking GPU burst containers… (this can take ~30s)"));
+  body.append(wrap);
+  const busy = new Set();
+  let models = null;
+  const render = () => {
+    if (!models.length) { wrap.replaceChildren(h("p", { class: "muted" }, "No GPU burst launchers on the box.")); return; }
+    wrap.replaceChildren(...models.map((m) => {
+      const [color] = hstyle(m.model);
+      const act = (action, label, kind) => h("button", { class: `btn ${kind}`, disabled: busy.has(m.model), onclick: () => doAct(m, action) }, label);
+      return h("div", { class: "card" },
+        h("div", { class: "card-label" }, m.target || ""),
+        h("div", { class: "card-value", style: { color } }, m.model.toUpperCase()),
+        h("div", { class: `small mono ${m.held ? "ok-text" : "muted"}` }, busy.has(m.model) ? "working…" : U.burstState(m)),
+        m.detail ? h("pre", { class: "mono small detail" }, m.detail) : null,
+        h("div", { class: "row card-actions" },
+          m.held ? act("release", "Release", "ghost danger") : act("warm", "Warm", "primary"),
+          act("status", "Status", "ghost")));
+    }));
+  };
+  const load = async () => {
+    try { models = (await api("GET", "/box/burst", null, 120)).models || []; render(); }
+    catch (e) { wrap.replaceChildren(h("p", { class: "err" }, String(e))); }
+  };
+  const doAct = async (m, action) => {
+    if (action === "release" && !(await confirmBox(`Release ${m.model.toUpperCase()}?`, "Lets the container scale to zero. A chat using it will cold-start again (~3 min).", "Release"))) return;
+    busy.add(m.model); render();
+    try {
+      const r = await api("POST", `/box/burst/${enc(m.model)}/${action}`, null, 120);
+      if (r.ok === false) toast(r.error || r.detail || `${action} failed`, "bad");
+      else toast(`${m.model}: ${(r.detail || "ok").split("\n")[0].slice(0, 140)}`, "good");
+      if (action === "status" && r.detail) m.detail = r.detail;
+    } catch (e) { fail(e); }
+    busy.delete(m.model);
+    if (boxLive("burst")) { if (action === "status") render(); else load(); }
+  };
+  load();
+}
+
+function boxReaper(body) {
+  const panel = h("div", { class: "reaper" }, h("p", { class: "muted" }, "Loading…"));
+  body.append(panel);
+  let st = null;
+  const save = async (patch) => {
+    try { st = await api("PUT", "/box/reaper", patch); render(); } catch (e) { fail(e); load(); }
+  };
+  const render = () => {
+    const cfg = st.config || {};
+    const enabled = h("input", { type: "checkbox", checked: !!cfg.enabled, onchange: (e) => save({ enabled: e.target.checked }) });
+    const nonHelm = h("input", { type: "checkbox", checked: !!cfg.include_non_helm, onchange: (e) => save({ include_non_helm: e.target.checked }) });
+    const hours = h("input", { type: "number", min: 1, max: 336, step: 1, value: cfg.idle_hours, class: "mono num" });
+    hours.addEventListener("change", () => {
+      const v = Math.round(Number(hours.value));
+      if (!(v >= 1 && v <= 336)) { toast("Idle hours must be 1 to 336", "bad"); hours.value = cfg.idle_hours; return; }
+      if (v !== cfg.idle_hours) save({ idle_hours: v });
+    });
+    const cands = st.candidates || [];
+    const last = st.last_run && st.last_run.at
+      ? `Last run ${ago(st.last_run.at)} ago, killed ${(st.last_run.killed || []).length}.` : "Not run yet since helmd started.";
+    const runBtn = h("button", { class: "btn danger", disabled: !cands.length, onclick: async () => {
+      if (!(await confirmBox("Kill stale sessions?", `Kills ${cands.map((c) => c.name).join(", ")}. Killed chats can be resumed.`, "Kill"))) return;
+      try { const r = await api("POST", "/box/reaper/run"); toast(`Killed ${(r.killed || []).length}`, "good"); st = r; render(); } catch (e) { fail(e); }
+    } }, U.reaperRunLabel(st));
+    panel.replaceChildren(
+      h("label", { class: "check-label" }, enabled, "Auto-kill idle tmux sessions"),
+      h("label", { class: "check-label" }, "After", hours, "hours idle"),
+      h("label", { class: "check-label" }, nonHelm, "Include non-Helm sessions"),
+      h("p", { class: "small muted" }, `Checked every ${Math.round((st.interval_seconds || 900) / 60)} min. Attached sessions and "main" are never killed. Killed chats can be resumed. ${last}`),
+      cands.length ? h("ul", { class: "cands mono small" }, cands.map((c) => h("li", {}, `${c.name}  idle ${c.idle_hours != null ? Number(c.idle_hours).toFixed(1) : "?"}h`))) : null,
+      h("div", { class: "row" }, runBtn, h("button", { class: "btn ghost", onclick: load }, "Refresh")));
+  };
+  const load = async () => {
+    try { st = await api("GET", "/box/reaper"); if (boxLive("reaper")) render(); }
+    catch (e) { panel.replaceChildren(h("p", { class: "err" }, String(e))); }
+  };
+  load();
 }
 
 // ---------- Files ----------
@@ -860,9 +964,59 @@ async function uploadToFolder(paths) {
   for (const p of paths) {
     const name = p.split(/[\\/]/).pop();
     toast(`Uploading ${name}…`);
-    try { const r = await invoke("upload", { endpoint: "/box/upload", localPath: p, fields: { dir } }); toast(`Uploaded ${r.path.split("/").pop()} (${bytes(r.size)})`, "good"); } catch (e) { fail(e); }
+    try { const r = await invoke("upload", { endpoint: "/box/upload", localPath: p, fields: { dir } }); toast(`Uploaded ${r.path.split("/").pop()} (${bytes(r.size)})`, "good"); }
+    catch (e) {
+      // A dropped folder: upload it recursively instead of failing.
+      if (/: not a file$/.test(String(e))) await uploadFolder(p, dir);
+      else fail(e);
+    }
   }
   if (view === "files" && filesPath === dir) listFiles(dir);
+}
+
+$("f-upload-dir").onclick = async () => {
+  const picked = await T.dialog.open({ directory: true, multiple: false, title: `Upload a folder to ${filesPath}` });
+  if (picked) await uploadFolder(Array.isArray(picked) ? picked[0] : picked, filesPath);
+};
+
+// Recursive folder upload, done in Rust (one /box/upload per file with rel).
+// Progress arrives as "folder-upload" events for this job id.
+const folderJobs = new Map();
+T.event.listen("folder-upload", (e) => {
+  const p = e.payload;
+  const j = folderJobs.get(p.job);
+  if (!j) return;
+  j.done = p.done;
+  j.total = p.total;
+  if (p.error) j.errors.push(`${p.rel}: ${p.error}`);
+  renderJob(j);
+});
+function renderJob(j) {
+  const pct = j.total ? (j.done / j.total) * 100 : 0;
+  j.el.replaceChildren(
+    h("div", { class: "job-head" },
+      h("span", {}, j.result ? U.folderSummary(j.result) : U.folderProgressText(j.name, j.done, j.total, j.errors.length)),
+      j.result || j.fatal ? h("button", { class: "btn ghost small", onclick: () => { j.el.remove(); folderJobs.delete(j.id); } }, "Dismiss") : null),
+    j.result || j.fatal ? null : h("div", { class: "bar" }, h("i", { style: { width: `${pct}%`, background: "var(--lime)" } })),
+    j.fatal ? h("div", { class: "err small" }, j.fatal) : null,
+    j.errors.length ? h("details", { open: !!j.result },
+      h("summary", { class: "small err" }, `${j.errors.length} failed`),
+      h("ul", { class: "job-errs mono small" }, j.errors.map((x) => h("li", {}, x)))) : null);
+}
+async function uploadFolder(localDir, remoteDir) {
+  const name = localDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  const j = { id: cid(), name, done: 0, total: 0, errors: [], result: null, fatal: null, el: h("div", { class: "job" }) };
+  folderJobs.set(j.id, j);
+  $("f-jobs").append(j.el);
+  renderJob(j);
+  try {
+    j.result = await invoke("upload_folder", { job: j.id, localDir, remoteDir });
+    // Event order vs. the returned value isn't guaranteed; the result is the record.
+    j.errors = (j.result.failed || []).map((f) => `${f.rel}: ${f.error}`);
+    toast(U.folderSummary(j.result), j.errors.length ? "bad" : "good");
+  } catch (e) { j.fatal = String(e); fail(e); }
+  renderJob(j);
+  if (view === "files" && filesPath === remoteDir) listFiles(remoteDir);
 }
 
 async function listFiles(path) {

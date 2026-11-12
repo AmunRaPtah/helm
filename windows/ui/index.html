@@ -70,6 +70,7 @@
           <div id="transcript" class="transcript">
             <div id="items" class="items"></div>
             <div id="pending" class="items"></div>
+            <div id="reconnect" class="line reconnect hidden" role="status"></div>
             <div id="typing" class="typing hidden"><i></i><i></i><i></i></div>
           </div>
           <button id="jump" class="jump hidden" title="Jump to latest">↓ Latest</button>
@@ -92,6 +93,8 @@
             <button data-tab="system" class="tab active">System</button>
             <button data-tab="tmux" class="tab">Tmux</button>
             <button data-tab="services" class="tab">Services</button>
+            <button data-tab="burst" class="tab">GPU burst</button>
+            <button data-tab="reaper" class="tab">Auto-kill</button>
             <button data-tab="shell" class="tab">Shell</button>
           </div>
         </header>
@@ -106,9 +109,11 @@
             <input id="f-path" class="mono" spellcheck="false" />
             <button id="f-refresh" class="btn ghost">Refresh</button>
             <button id="f-mkdir" class="btn ghost">New folder</button>
+            <button id="f-upload-dir" class="btn ghost">Upload folder</button>
             <button id="f-upload" class="btn primary">Upload</button>
           </div>
         </header>
+        <div id="f-jobs" class="jobs"></div>
         <div class="files-wrap"><table class="files"><tbody id="f-list"></tbody></table></div>
       </section>
     </main>
@@ -117,6 +122,7 @@
   <div id="modal-root"></div>
   <div id="toasts" class="toasts"></div>
   <script src="markdown.js"></script>
+  <script src="util.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
