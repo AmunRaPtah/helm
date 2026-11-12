@@ -116,7 +116,7 @@ that only emits final `assistant` events is valid.
 | GET | `/sessions` | | `[Session]` sorted by `updated` desc |
 | POST | `/sessions` | `{harness, profile?, model?, cwd?, permission?, text?}` | `Session` (creates tmux session; if `text` given, sends it as first message) |
 | GET | `/sessions/{id}` | | `Session` |
-| PATCH | `/sessions/{id}` | `{title?}` | `Session` |
+| PATCH | `/sessions/{id}` | `{title?, model?}` | `Session`. `model` must be one of the harness's `models` (`""` = harness default); 400 for an unknown model or a fixed-model harness. Claude with a live runner switches in place (`/model X`); other long-lived harnesses restart the runner (409 while a turn is running); otherwise it applies from the next message, noted by a `system` event |
 | DELETE | `/sessions/{id}` | | `{"ok":true}` (kills tmux, keeps files unless `?purge=1`) |
 | GET | `/sessions/{id}/events?after=N&limit=500` | | `[Event]` |
 | POST | `/sessions/{id}/messages` | `{text, attachments?: [path], client_id?}` | `{"ok":true,"queued":bool,"revived":bool}`; sent mid-turn it is queued, not rejected. `revived` means the chat's runner was dead and was restarted to take this message (a `status` event `state:"starting"`, detail `"runner was not running; restarted on send"`, is streamed first, so clients can show "Reconnecting…") |

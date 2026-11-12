@@ -87,7 +87,8 @@ function modal(title, body, buttons) {
     const root = h("div", { class: "modal-back", onmousedown: (e) => e.target === root && !busy && close(null) },
       h("div", { class: "modal" },
         h("h3", {}, title),
-        h("div", { class: "modal-body" }, body),
+        // A function body gets close(), for pickers that finish the modal.
+        h("div", { class: "modal-body" }, typeof body === "function" ? body(close) : body),
         h("div", { class: "modal-foot" }, btns)));
     openModals.add(close);
     document.addEventListener("keydown", onKey, true);
@@ -178,12 +179,20 @@ function showView(v) {
 function startApp() {
   showView("chats");
   refreshSessions();
+  loadHarnesses().then(() => chat && renderChatHead()).catch(() => {});
   every(5000, () => unlocked && refreshSessions());
 }
 
 // ---------- sessions ----------
 let sessions = [];
 let harnesses = null;
+// /harnesses probes every CLI (~6s), so fetch it once in the background.
+let harnessesP = null;
+function loadHarnesses(force = false) {
+  if (force || !harnessesP) harnessesP = api("GET", "/harnesses", null, 60).then((r) => (harnesses = r)).catch((e) => { harnessesP = null; throw e; });
+  return harnessesP;
+}
+const harnessOf = (id) => (harnesses || []).find((x) => x.id === id) || null;
 
 async function refreshSessions() {
   try {
@@ -500,7 +509,16 @@ function renderChatHead() {
   b.style.borderColor = `${color}55`;
   b.style.background = `${color}1a`;
   $("chat-title").textContent = s.title || "(untitled)";
-  $("chat-sub").textContent = [s.cwd, s.model, s.profile, s.permission].filter(Boolean).join(" · ");
+  $("chat-sub").textContent = [(s.cwd || "").replace(/^\/root(?=\/|$)/, "~"), s.profile, s.permission].filter(Boolean).join(" · ");
+  // Model chip: clickable when the harness offers a model list.
+  const hx = harnessOf(s.harness);
+  const switchable = !!(hx && hx.models && hx.models.length);
+  const mb = $("chat-model");
+  mb.style.setProperty("--hc", color);
+  mb.querySelector("span").textContent = s.model || (hx && hx.default_model ? `${hx.default_model}` : "default model");
+  mb.classList.toggle("hidden", !s.model && !switchable);
+  mb.disabled = !switchable;
+  mb.title = switchable ? "Switch model (/model)" : "This harness has a fixed model";
   const st = $("chat-state");
   st.textContent = s.state;
   st.className = `state ${s.state}`;
@@ -525,6 +543,7 @@ function renderLiveState() {
   lastLiveState = state;
 }
 
+$("chat-model").onclick = chooseModel;
 $("act-interrupt").onclick = () => chat && api("POST", `/sessions/${chat.id}/interrupt`).catch(fail);
 $("act-resume").onclick = async () => {
   if (!chat) return;
@@ -564,35 +583,89 @@ input.addEventListener("input", () => { autosize(); updateSlash(); });
 input.addEventListener("keydown", (e) => {
   const sl = $("slash");
   if (!sl.classList.contains("hidden")) {
-    const opts = [...sl.children];
+    const opts = [...sl.querySelectorAll("li[data-val]")];
     let i = opts.findIndex((o) => o.classList.contains("sel"));
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && opts.length) {
       e.preventDefault();
       i = (i + (e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length;
       opts.forEach((o, j) => o.classList.toggle("sel", j === i));
+      opts[i].scrollIntoView({ block: "nearest" });
       return;
     }
-    const exact = i >= 0 && input.value === `/${opts[i].dataset.cmd}`;
-    if (e.key === "Tab" || (e.key === "Enter" && i >= 0 && !exact)) {
+    const cur = opts[Math.max(i, 0)];
+    const exact = cur && input.value.trimEnd() === cur.dataset.val.trimEnd();
+    if (cur && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !exact))) {
       e.preventDefault();
-      pickSlash(opts[Math.max(i, 0)].dataset.cmd);
+      pickSlash(cur.dataset.val);
       return;
     }
-    if (e.key === "Escape") { sl.classList.add("hidden"); return; }
+    if (e.key === "Escape") { e.preventDefault(); sl.classList.add("hidden"); return; }
   }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
+input.addEventListener("blur", () => setTimeout(() => $("slash").classList.add("hidden"), 120));
+
+// What each common command does, for the slash menu. Unknown names (skills,
+// custom commands) still show, just without a description.
+const CMD_HELP = {
+  model: "Switch model", compact: "Summarise the conversation to free context", context: "Show context window usage",
+  cost: "Token usage and cost so far", init: "Write a CLAUDE.md for this folder", review: "Review the current changes",
+  "security-review": "Security review of pending changes", clear: "Start a fresh conversation", help: "List commands",
+  memory: "Edit memory files", agents: "Manage subagents", mcp: "MCP server status", status: "Session status",
+  permissions: "Show permission rules", resume: "Resume an earlier conversation", usage: "Plan usage limits",
+};
+function slashCommands() {
+  const c = chat;
+  if (!c) return [];
+  const names = [...(c.commands || [])];
+  const hx = harnessOf(c.session.harness);
+  if (hx && hx.models && hx.models.length && !names.includes("model")) names.unshift("model");
+  return [...new Set(names)];
+}
+// Ranks prefix matches first, then word-start, then anywhere in the name.
+function rankMatch(name, q) {
+  const n = name.toLowerCase();
+  if (!q) return 1;
+  if (n.startsWith(q)) return 3;
+  if (n.split(/[-_:]/).some((w) => w.startsWith(q))) return 2;
+  return n.includes(q) ? 1 : 0;
+}
 function updateSlash() {
   const sl = $("slash");
-  const m = input.value.match(/^\/(\S*)$/);
-  const cmds = chat && chat.commands;
-  if (!m || !cmds || !cmds.length) { sl.classList.add("hidden"); return; }
-  const hits = cmds.filter((c) => c.toLowerCase().startsWith(m[1].toLowerCase())).slice(0, 12);
-  if (!hits.length) { sl.classList.add("hidden"); return; }
-  sl.replaceChildren(...hits.map((c, j) => h("li", { class: j === 0 ? "sel" : "", "data-cmd": c, onmousedown: (e) => { e.preventDefault(); pickSlash(c); } }, `/${c}`)));
+  const c = chat;
+  const hide = () => sl.classList.add("hidden");
+  if (!c) return hide();
+  let rows = [];
+  let title = "Commands";
+  const arg = input.value.match(/^\/model\s+(\S*)$/);
+  const cmd = input.value.match(/^\/(\S*)$/);
+  if (arg) {
+    const hx = harnessOf(c.session.harness);
+    if (!hx || !hx.models || !hx.models.length) return hide();
+    const q = arg[1].toLowerCase();
+    title = `Models · ${hx.name}`;
+    rows = ["default", ...hx.models]
+      .map((m) => [m, rankMatch(m, q)]).filter(([, r]) => r).sort((x, y) => y[1] - x[1])
+      .map(([m]) => ({ val: `/model ${m}`, label: m, desc: m === "default" ? hx.default_model || "" : "", cur: (c.session.model || "default") === m }));
+  } else if (cmd) {
+    const q = cmd[1].toLowerCase();
+    rows = slashCommands()
+      .map((n) => [n, rankMatch(n, q)]).filter(([, r]) => r).sort((x, y) => y[1] - x[1])
+      .map(([n]) => ({ val: `/${n} `, label: `/${n}`, desc: CMD_HELP[n] || "" }));
+  } else return hide();
+  if (!rows.length) return hide();
+  sl.replaceChildren(h("li", { class: "slash-head" }, title, h("span", {}, "↑↓ to move · Tab to complete · Esc")),
+    ...rows.map((r, j) => h("li", { class: `${j === 0 ? "sel" : ""}${r.cur ? " cur" : ""}`, "data-val": r.val, onmousedown: (e) => { e.preventDefault(); pickSlash(r.val); } },
+      h("span", { class: "slash-name" }, r.label), r.desc ? h("span", { class: "slash-desc" }, r.desc) : null, r.cur ? h("span", { class: "mp-check" }, "✓") : null)));
   sl.classList.remove("hidden");
 }
-function pickSlash(c) { input.value = `/${c} `; $("slash").classList.add("hidden"); input.focus(); autosize(); }
+function pickSlash(val) {
+  input.value = val;
+  $("slash").classList.add("hidden");
+  input.focus();
+  autosize();
+  updateSlash(); // "/model " opens the model list straight away
+}
 
 $("send").onclick = send;
 async function send() {
@@ -600,6 +673,15 @@ async function send() {
   if (!c) return;
   const text = input.value.trim();
   if (!text && !c.attachments.length) return;
+  // /model on harnesses without a native /model goes through helmd's PATCH,
+  // which validates the name and restarts the runner when it must. Claude
+  // takes /model itself (and accepts ids outside the short list).
+  const mm = !c.attachments.length && text.match(/^\/model(?:\s+(\S+))?$/);
+  if (mm && (c.session.harness !== "claude" || !mm[1])) {
+    input.value = ""; autosize(); $("slash").classList.add("hidden");
+    if (!mm[1]) chooseModel(); else setModel(mm[1] === "default" ? "" : mm[1]);
+    return;
+  }
   if (c.uploading) { toast("Wait for the upload to finish"); return; }
   const p = { client_id: cid(), text, attachments: c.attachments.map((a) => a.path), state: "sending" };
   c.pending.push(p);
@@ -633,28 +715,102 @@ async function sendPending(p) {
   if (chat === c) renderPending();
 }
 
+// --- transfers ---
+// Every upload/download carries a transfer id; Rust streams "transfer"
+// events {id, done, total} and aborts when cancel_transfer is called.
+const transfers = new Map();
+const isCancel = (e) => String(e) === "cancelled";
+T.event.listen("transfer", (e) => {
+  const t = transfers.get(e.payload.id);
+  if (!t) return;
+  t.done = e.payload.done;
+  t.total = e.payload.total;
+  renderTransfer(t);
+  if (t.onProgress) t.onProgress(t);
+});
+function transferPct(t) { return t.total ? Math.min(100, (t.done / t.total) * 100) : 0; }
+function renderTransfer(t) {
+  const secs = (Date.now() - t.started) / 1000;
+  const rate = secs > 0.5 ? t.done / secs : 0;
+  const eta = rate && t.total > t.done ? Math.round((t.total - t.done) / rate) : null;
+  const status = t.state === "active"
+    ? [t.total ? `${bytes(t.done)} of ${bytes(t.total)}` : bytes(t.done), rate ? `${bytes(rate)}/s` : null, eta != null ? (eta >= 60 ? `${Math.ceil(eta / 60)} min left` : `${eta}s left`) : null].filter(Boolean).join(" · ")
+    : t.state === "done" ? `Done · ${bytes(t.total || t.done)}` : t.state === "cancelled" ? "Cancelled" : t.error;
+  t.el.className = `xfer ${t.state}`;
+  t.el.replaceChildren(
+    h("span", { class: "xfer-icon" }, t.kind === "down" ? "↓" : "↑"),
+    h("div", { class: "xfer-main" },
+      h("div", { class: "xfer-name", title: t.name }, t.name),
+      h("div", { class: "xfer-bar" + (t.state === "active" && !t.total ? " indet" : "") }, h("i", { style: { width: `${t.state === "done" ? 100 : transferPct(t)}%` } })),
+      h("div", { class: "xfer-meta" }, status)),
+    t.state === "active"
+      ? h("button", { class: "xfer-x", title: "Cancel", onclick: () => invoke("cancel_transfer", { id: t.id }).catch(fail) }, "×")
+      : h("button", { class: "xfer-x", title: "Dismiss", onclick: () => dropTransfer(t) }, "×"));
+  $("transfers").classList.toggle("hidden", !transfers.size);
+}
+function dropTransfer(t) { transfers.delete(t.id); t.el.remove(); $("transfers").classList.toggle("hidden", !transfers.size); }
+async function runTransfer(kind, name, cmd, args, onProgress) {
+  const t = { id: cid(), kind, name, done: 0, total: 0, started: Date.now(), state: "active", error: "", onProgress, el: h("div") };
+  transfers.set(t.id, t);
+  $("transfers").append(t.el);
+  renderTransfer(t);
+  try {
+    const r = await invoke(cmd, { ...args, transfer: t.id });
+    t.state = "done";
+    return r;
+  } catch (e) {
+    t.state = isCancel(e) ? "cancelled" : "failed";
+    t.error = String(e);
+    throw e;
+  } finally {
+    renderTransfer(t);
+    setTimeout(() => transfers.get(t.id) === t && dropTransfer(t), t.state === "done" ? 3000 : t.state === "cancelled" ? 2500 : 15000);
+  }
+}
+
 // --- attachments ---
 function renderChips() {
   const c = chat;
-  $("attach-chips").replaceChildren(...(c ? c.attachments : []).map((a) =>
-    h("span", { class: "chip" }, a.name, h("button", { class: "x", title: "Remove", onclick: () => { c.attachments = c.attachments.filter((x) => x !== a); renderChips(); } }, "×"))));
+  if (!c) { $("attach-chips").replaceChildren(); return; }
+  const icon = (name) => h("span", { class: "chip-icon" }, fileGlyph(name, false));
+  $("attach-chips").replaceChildren(
+    ...c.attachments.map((a) => h("span", { class: "chip" }, icon(a.name), a.name,
+      h("button", { class: "x", title: "Remove", onclick: () => { c.attachments = c.attachments.filter((x) => x !== a); renderChips(); } }, "×"))),
+    ...(c.uploads || []).map((u) => h("span", { class: `chip ${u.state}`, title: u.error || "" },
+      u.state === "busy" ? h("span", { class: "chip-ring", style: { "--p": `${u.pct || 0}` } }) : icon(u.name),
+      u.name,
+      u.state === "busy" ? h("span", { class: "chip-pct" }, `${Math.round(u.pct || 0)}%`) : null,
+      u.state === "failed" ? h("button", { class: "linkbtn", onclick: () => uploadOne(c, u) }, "Retry") : null,
+      u.state === "busy" ? h("button", { class: "x", title: "Cancel", onclick: () => u.tid && invoke("cancel_transfer", { id: u.tid }) }, "×")
+        : h("button", { class: "x", title: "Remove", onclick: () => { c.uploads = c.uploads.filter((x) => x !== u); renderChips(); } }, "×"))));
+}
+// One chip per file. A failed upload stays as a chip with Retry instead of
+// vanishing behind a toast.
+async function uploadOne(c, u) {
+  u.state = "busy"; u.pct = 0; u.error = "";
+  c.uploading = (c.uploading || 0) + 1;
+  renderChips();
+  try {
+    const r = await runTransfer("up", u.name, "upload", { endpoint: "/upload", localPath: u.path, fields: { session_id: c.id } }, (t) => {
+      u.tid = t.id; u.pct = transferPct(t);
+      if (chat === c) renderChips();
+    });
+    c.uploads = c.uploads.filter((x) => x !== u);
+    c.attachments.push({ name: u.name, path: r.path });
+  } catch (e) {
+    if (isCancel(e)) c.uploads = c.uploads.filter((x) => x !== u);
+    else { u.state = "failed"; u.error = String(e); }
+  }
+  c.uploading--;
+  if (chat === c) renderChips();
 }
 async function attachPaths(paths) {
   const c = chat;
   if (!c || !paths || !paths.length) return;
-  c.uploading = (c.uploading || 0) + 1;
-  for (const path of paths) {
-    const name = path.split(/[\\/]/).pop();
-    const chip = h("span", { class: "chip busy" }, `Uploading ${name}…`);
-    $("attach-chips").append(chip);
-    try {
-      const r = await invoke("upload", { endpoint: "/upload", localPath: path, fields: { session_id: c.id } });
-      c.attachments.push({ name, path: r.path });
-    } catch (e) { fail(e); }
-    chip.remove();
-  }
-  c.uploading--;
-  if (chat === c) renderChips();
+  c.uploads = c.uploads || [];
+  const ups = paths.map((path) => ({ path, name: path.split(/[\\/]/).pop(), state: "busy", pct: 0 }));
+  c.uploads.push(...ups);
+  await Promise.all(ups.map((u) => uploadOne(c, u)));
 }
 $("attach").onclick = async () => {
   const picked = await T.dialog.open({ multiple: true, directory: false, title: "Attach files" });
@@ -666,26 +822,91 @@ T.webview.getCurrentWebview().onDragDropEvent((e) => {
   else if (view === "files") uploadToFolder(e.payload.paths);
 });
 
+// ---------- models ----------
+// Searchable model list: Venice alone exposes 100+ models, which a <select>
+// made unusable. Every whitespace-separated term must match.
+function modelPicker(hx, current, onPick) {
+  const models = hx.models || [];
+  const q = h("input", { class: "mp-q", placeholder: models.length > 8 ? `Search ${models.length} models` : "Filter models", spellcheck: "false", autocomplete: "off" });
+  const list = h("ul", { class: "mp-list", role: "listbox" });
+  let value = current || "";
+  let hits = [];
+  let sel = 0;
+  const all = [{ id: "", label: "Default", hint: hx.default_model || "harness default" }, ...models.map((m) => ({ id: m, label: m }))];
+  const render = (scroll = true) => {
+    const terms = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    hits = all.filter((o) => terms.every((t) => `${o.label} ${o.hint || ""}`.toLowerCase().includes(t)));
+    sel = Math.max(0, Math.min(sel, hits.length - 1));
+    list.replaceChildren(...hits.map((o, i) => h("li", {
+      class: `mp-opt${i === sel ? " sel" : ""}${o.id === value ? " cur" : ""}`, role: "option",
+      onmousedown: (e) => { e.preventDefault(); choose(o.id); }, onmousemove: () => { if (sel !== i) { sel = i; render(false); } },
+    }, h("span", { class: "mp-name mono" }, o.label), o.hint ? h("span", { class: "mp-hint" }, o.hint) : null, o.id === value ? h("span", { class: "mp-check" }, "✓") : null)));
+    if (!hits.length) list.append(h("li", { class: "mp-none" }, "No model matches"));
+    if (scroll) { const el = list.children[sel]; if (el) el.scrollIntoView({ block: "nearest" }); }
+  };
+  const choose = (id) => { value = id; render(false); if (onPick) onPick(id); };
+  q.addEventListener("input", () => { sel = 0; render(); });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); sel = (sel + (e.key === "ArrowDown" ? 1 : -1) + hits.length) % Math.max(hits.length, 1); render(); }
+    else if (e.key === "Enter") { e.preventDefault(); if (hits[sel]) choose(hits[sel].id); }
+  });
+  sel = Math.max(0, all.findIndex((o) => o.id === value));
+  render();
+  return { el: h("div", { class: "mp" }, q, list), get value() { return value; }, focus: () => q.focus() };
+}
+
+// Switch the open chat's model. helmd decides how: claude switches live
+// (/model to the runner), other long-lived runners restart with --resume,
+// codex picks it up on the next turn.
+async function setModel(model) {
+  const c = chat;
+  if (!c) return;
+  try {
+    c.session = await api("PATCH", `/sessions/${c.id}`, { model: model || null }, 60);
+    if (chat === c) renderChatHead();
+    toast(`Model: ${model || "default"}`, "good");
+    refreshSessions();
+  } catch (e) {
+    fail(String(e).includes("409") || /turn is running/.test(String(e)) ? "A turn is running. Stop it or wait, then switch model." : e);
+  }
+}
+async function chooseModel() {
+  const c = chat;
+  if (!c) return;
+  let hx;
+  try { await loadHarnesses(); hx = harnessOf(c.session.harness); } catch (e) { fail(e); return; }
+  if (!hx || !(hx.models && hx.models.length)) { toast(`${hstyle(c.session.harness)[1]} has a fixed model`); return; }
+  const note = c.session.harness === "claude" ? "Switches in place; the conversation continues."
+    : U.LONG_LIVED.includes(c.session.harness) ? "The runner restarts and resumes this conversation on the new model."
+    : "Applies from your next message.";
+  const picked = await modal(`Model · ${hx.name}`, (close) => h("div", { class: "form" },
+    modelPicker(hx, c.session.model || "", (id) => close({ id })).el,
+    h("p", { class: "small muted" }, note)), [{ label: "Cancel", result: null }]);
+  if (picked && picked.id !== (c.session.model || "")) await setModel(picked.id);
+}
+
 // ---------- new chat ----------
 $("new-chat").onclick = newChat;
+$("empty-new").onclick = newChat;
 async function newChat() {
-  try { harnesses = harnesses || (await api("GET", "/harnesses")); } catch (e) { fail(e); return; }
+  try { await loadHarnesses(); } catch (e) { fail(e); return; }
   const avail = harnesses.filter((x) => x.available);
   const sel = h("select", {}, avail.map((x) => h("option", { value: x.id }, x.name)));
   const profile = h("select", {});
-  const model = h("select", {});
+  let model = { value: "" };
   const perm = h("select", {}, ["bypass", "acceptEdits", "default", "plan"].map((p) => h("option", { value: p }, p)));
   const cwd = h("input", { value: "/root/projects", class: "mono wide", spellcheck: "false" });
   const dirs = h("ul", { class: "dirs hidden" });
   const text = h("textarea", { rows: 4, placeholder: "First message (optional)" });
   const profRow = h("label", { class: "field" }, "Account", profile);
-  const modelRow = h("label", { class: "field" }, "Model", model);
+  const modelRow = h("div", { class: "field" }, "Model");
   const sync = () => {
     const hx = avail.find((x) => x.id === sel.value) || {};
     profRow.classList.toggle("hidden", !hx.supports_profiles);
     profile.replaceChildren(h("option", { value: "" }, "default"), ...(hx.profiles || []).map((p) => h("option", { value: p }, p)));
     modelRow.classList.toggle("hidden", !(hx.models && hx.models.length));
-    model.replaceChildren(h("option", { value: "" }, `default${hx.default_model ? ` (${hx.default_model})` : ""}`), ...(hx.models || []).map((m) => h("option", { value: m }, m)));
+    model = modelPicker(hx, "");
+    modelRow.replaceChildren("Model", model.el);
   };
   sel.onchange = sync;
   sync();
@@ -963,12 +1184,11 @@ async function uploadToFolder(paths) {
   const dir = filesPath;
   for (const p of paths) {
     const name = p.split(/[\\/]/).pop();
-    toast(`Uploading ${name}…`);
-    try { const r = await invoke("upload", { endpoint: "/box/upload", localPath: p, fields: { dir } }); toast(`Uploaded ${r.path.split("/").pop()} (${bytes(r.size)})`, "good"); }
+    try { await runTransfer("up", name, "upload", { endpoint: "/box/upload", localPath: p, fields: { dir } }); }
     catch (e) {
       // A dropped folder: upload it recursively instead of failing.
-      if (/: not a file$/.test(String(e))) await uploadFolder(p, dir);
-      else fail(e);
+      if (/: not a file$/.test(String(e))) { const t = [...transfers.values()].find((x) => x.name === name && x.state === "failed"); if (t) dropTransfer(t); await uploadFolder(p, dir); }
+      else if (!isCancel(e)) fail(e);
     }
   }
   if (view === "files" && filesPath === dir) listFiles(dir);
@@ -1019,34 +1239,79 @@ async function uploadFolder(localDir, remoteDir) {
   if (view === "files" && filesPath === remoteDir) listFiles(remoteDir);
 }
 
+// File-type glyphs: a few families, not a full icon set.
+const EXT_KIND = {
+  code: "js ts tsx jsx py rs go c h cpp java rb sh ps1 swift kt lua sql css html vue toml yaml yml json xml".split(" "),
+  doc: "md txt pdf doc docx rtf odt tex csv xls xlsx".split(" "),
+  img: "png jpg jpeg gif webp svg bmp ico heic".split(" "),
+  arc: "zip tar gz tgz xz bz2 7z rar zst".split(" "),
+  media: "mp3 wav flac ogg m4a mp4 mov mkv webm avi".split(" "),
+};
+function fileKind(name, isDir) {
+  if (isDir) return "dir";
+  const ext = (name.match(/\.([^.]+)$/) || [])[1];
+  if (!ext) return "file";
+  const x = ext.toLowerCase();
+  return Object.keys(EXT_KIND).find((k) => EXT_KIND[k].includes(x)) || "file";
+}
+const KIND_GLYPH = { dir: "▰", code: "</>", doc: "≣", img: "◩", arc: "▦", media: "♪", file: "▢" };
+function fileGlyph(name, isDir) { return KIND_GLYPH[fileKind(name, isDir)]; }
+
+function renderCrumbs(path) {
+  const parts = path.split("/").filter(Boolean);
+  const crumbs = [h("button", { class: "crumb", onclick: () => listFiles("/") }, "/")];
+  parts.forEach((p, i) => {
+    const to = `/${parts.slice(0, i + 1).join("/")}`;
+    if (i) crumbs.push(h("span", { class: "crumb-sep" }, "/"));
+    crumbs.push(h("button", { class: `crumb${i === parts.length - 1 ? " last" : ""}`, onclick: () => listFiles(to) }, p));
+  });
+  $("f-crumbs").replaceChildren(...crumbs);
+}
+
+let listGen = 0;
 async function listFiles(path) {
+  const gen = ++listGen;
   try {
     const r = await api("GET", `/box/fs/list?path=${enc(path)}`);
+    if (gen !== listGen) return; // a newer navigation won
     filesPath = r.path;
     fPath.value = r.path;
+    renderCrumbs(r.path);
     const full = (e) => `${r.path.replace(/\/$/, "")}/${e.name}`;
-    $("f-list").replaceChildren(...r.entries.map((e) => h("tr", { class: e.is_dir ? "dir" : "" },
-      h("td", { class: "fname", onclick: () => e.is_dir && listFiles(full(e)) }, h("span", { class: "ficon" }, e.is_dir ? "▸" : "·"), e.name, e.is_link ? h("span", { class: "muted small" }, " ↪") : null),
-      h("td", { class: "small muted right" }, e.is_dir ? "" : bytes(e.size)),
-      h("td", { class: "small muted right" }, e.mtime ? new Date(e.mtime * 1000).toLocaleString() : ""),
-      h("td", { class: "right actions" },
-        h("button", { class: "btn ghost small", onclick: () => downloadEntry(full(e), e) }, "Download"),
-        h("button", { class: "btn ghost small", onclick: async () => {
-          const n = await ask("Rename", "New name", e.name);
-          if (!n || n === e.name) return;
-          try { await api("POST", "/box/fs/move", { src: full(e), dst: `${r.path.replace(/\/$/, "")}/${n}` }); listFiles(r.path); } catch (er) { fail(er); }
-        } }, "Rename"),
-        h("button", { class: "btn ghost small danger", onclick: async () => {
-          if (!(await confirmBox(`Delete ${e.name}?`, "It moves to the box trash (~/.helm/trash) and is purged after 7 days."))) return;
-          try { await api("POST", "/box/fs/delete", { path: full(e) }); listFiles(r.path); } catch (er) { fail(er); }
-        } }, "Delete")))));
+    const entries = [...r.entries].sort((a, b) => (b.is_dir - a.is_dir) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    const rename = async (e) => {
+      const n = await ask("Rename", "New name", e.name);
+      if (!n || n === e.name) return;
+      try { await api("POST", "/box/fs/move", { src: full(e), dst: `${r.path.replace(/\/$/, "")}/${n}` }); listFiles(r.path); } catch (er) { fail(er); }
+    };
+    const del = async (e) => {
+      if (!(await confirmBox(`Delete ${e.name}?`, "It moves to the box trash (~/.helm/trash) and is purged after 7 days."))) return;
+      try { await api("POST", "/box/fs/delete", { path: full(e) }); listFiles(r.path); } catch (er) { fail(er); }
+    };
+    if (!entries.length) {
+      $("f-list").replaceChildren(h("tr", { class: "f-empty" }, h("td", { colspan: 4 }, "This folder is empty. Drop files here to upload them.")));
+      return;
+    }
+    $("f-list").replaceChildren(...entries.map((e) => {
+      const kind = fileKind(e.name, e.is_dir);
+      return h("tr", { class: e.is_dir ? "dir" : "", title: e.is_dir ? "" : "Double-click to download",
+        onclick: () => e.is_dir && listFiles(full(e)), ondblclick: () => !e.is_dir && downloadEntry(full(e), e) },
+        h("td", { class: "fname" }, h("span", { class: `ficon k-${kind}` }, KIND_GLYPH[kind]), h("span", { class: "fn" }, e.name), e.is_link ? h("span", { class: "muted small" }, " ↪") : null),
+        h("td", { class: "small muted right num" }, e.is_dir ? "—" : bytes(e.size)),
+        h("td", { class: "small muted right" }, e.mtime ? ago(e.mtime) : ""),
+        h("td", { class: "right actions", onclick: (ev) => ev.stopPropagation() },
+          h("button", { class: "btn ghost small", title: e.is_dir ? "Download as .zip" : "Download", onclick: () => downloadEntry(full(e), e) }, "Download"),
+          h("button", { class: "btn ghost small", onclick: () => rename(e) }, "Rename"),
+          h("button", { class: "btn ghost small danger", onclick: () => del(e) }, "Delete")));
+    }));
   } catch (e) { fail(e); }
 }
 async function downloadEntry(remote, e) {
   const dest = await T.dialog.save({ defaultPath: e.is_dir ? `${e.name}.zip` : e.name, title: "Save as" });
   if (!dest) return;
-  toast(`Downloading ${e.name}…`);
-  try { const n = await invoke("download", { remotePath: remote, dest }); toast(`Saved ${bytes(n)}`, "good"); } catch (er) { fail(er); }
+  const name = e.is_dir ? `${e.name}.zip` : e.name;
+  try { const n = await runTransfer("down", name, "download", { remotePath: remote, dest }); toast(`Saved ${name} (${bytes(n)})`, "good"); }
+  catch (er) { if (!isCancel(er)) fail(er); }
 }
 
 // ---------- shortcuts ----------

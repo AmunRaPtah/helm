@@ -28,14 +28,14 @@
         <span>Helm</span>
       </div>
       <nav class="nav">
-        <button data-view="chats" class="nav-btn active">Chats</button>
-        <button data-view="box" class="nav-btn">Box</button>
-        <button data-view="files" class="nav-btn">Files</button>
+        <button data-view="chats" class="nav-btn active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4z"/></svg><span>Chats</span></button>
+        <button data-view="box" class="nav-btn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v6H4zM4 14h16v6H4zM7 7h.01M7 17h.01"/></svg><span>Box</span></button>
+        <button data-view="files" class="nav-btn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v11H3z"/></svg><span>Files</span></button>
       </nav>
       <div id="side-chats" class="side-chats">
         <div class="side-tools">
           <input id="session-filter" type="search" placeholder="Search chats" />
-          <button id="new-chat" class="btn primary" title="New chat (Ctrl+N)">New</button>
+          <button id="new-chat" class="btn primary icon-btn" title="New chat (Ctrl+N)">＋</button>
         </div>
         <ul id="session-list" class="session-list"></ul>
       </div>
@@ -50,7 +50,9 @@
       <section id="view-chats" class="view">
         <div id="chat-empty" class="empty">
           <img src="helm-mark.svg" alt="" />
+          <h3>Your box, at the helm</h3>
           <p>Pick a chat on the left, or start a new one.</p>
+          <button id="empty-new" class="btn primary">New chat <kbd>Ctrl N</kbd></button>
         </div>
         <div id="chat" class="chat hidden">
           <header class="chat-head">
@@ -59,6 +61,7 @@
               <h2 id="chat-title"></h2>
               <span id="chat-sub" class="muted mono small"></span>
             </div>
+            <button id="chat-model" class="model-chip hidden" title="Switch model"><i class="mc-dot"></i><span></span><b>▾</b></button>
             <span id="chat-state" class="state"></span>
             <div class="chat-actions">
               <button id="act-interrupt" class="btn warn hidden">Stop</button>
@@ -75,12 +78,15 @@
           </div>
           <button id="jump" class="jump hidden" title="Jump to latest">↓ Latest</button>
           <footer class="composer">
-            <div id="attach-chips" class="chips"></div>
-            <ul id="slash" class="slash hidden"></ul>
-            <div class="composer-row">
-              <button id="attach" class="btn ghost" title="Attach files (or drop them here)">＋</button>
-              <textarea id="input" rows="1" placeholder="Message. Enter sends, Shift+Enter for a new line, / for commands, ! runs a shell command"></textarea>
-              <button id="send" class="btn primary">Send</button>
+            <div class="composer-card">
+              <ul id="slash" class="slash hidden"></ul>
+              <div id="attach-chips" class="chips"></div>
+              <textarea id="input" rows="1" placeholder="Message…  / for commands, ! runs a shell command"></textarea>
+              <div class="composer-row">
+                <button id="attach" class="icon-btn ghost" title="Attach files (or drop them here)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.5l-8.5 8.5a5 5 0 0 1-7-7L14 5.5a3.3 3.3 0 0 1 4.7 4.7L10.2 18.7a1.7 1.7 0 0 1-2.4-2.4L15.5 8.6"/></svg></button>
+                <span class="composer-hint">Enter to send · Shift+Enter for a new line</span>
+                <button id="send" class="send-btn" title="Send (Enter)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+              </div>
             </div>
           </footer>
         </div>
@@ -113,12 +119,14 @@
             <button id="f-upload" class="btn primary">Upload</button>
           </div>
         </header>
+        <nav id="f-crumbs" class="crumbs"></nav>
         <div id="f-jobs" class="jobs"></div>
         <div class="files-wrap"><table class="files"><tbody id="f-list"></tbody></table></div>
       </section>
     </main>
   </div>
 
+  <div id="transfers" class="transfers hidden" aria-live="polite"></div>
   <div id="modal-root"></div>
   <div id="toasts" class="toasts"></div>
   <script src="markdown.js"></script>

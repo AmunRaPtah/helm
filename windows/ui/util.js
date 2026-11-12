@@ -48,7 +48,9 @@
     return action === "stop" ? `Stop ${name}?` : null;
   }
 
-  const api = { reconnectText, riskyCommand, folderProgressText, folderSummary, reaperRunLabel, burstState, serviceConfirm };
+  // Mirrors helmd adapters.LONG_LIVED: harnesses with a persistent runner.
+  const LONG_LIVED = ["claude", "ds", "cc", "agy", "glm", "dsv", "sukuna", "venice", "api"];
+  const api = { LONG_LIVED, reconnectText, riskyCommand, folderProgressText, folderSummary, reaperRunLabel, burstState, serviceConfirm };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.HelmUtil = api;
 })(typeof window !== "undefined" ? window : globalThis);

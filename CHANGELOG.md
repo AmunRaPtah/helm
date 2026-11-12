@@ -10,6 +10,25 @@ was already released.
 
 Versions are `MAJOR.MINOR.PATCH`: patch for fixes, minor for features, major for breaking changes.
 
+## Windows 1.2.0 (2026-11-12)
+- New: switch model mid-chat. The model chip in the chat header opens a searchable picker, and
+  `/model` (bare) does the same; `/model <name>` switches directly on any harness. Claude switches
+  in place; other long-lived harnesses restart their runner; per-turn harnesses apply it next message.
+- New: New chat uses the same searchable model picker (Default shows the harness default).
+- New: slash menu shows a description for each command, ranks prefix matches first, and lists
+  models after `/model `. Tab completes, Esc closes.
+- New: transfers tray (bottom right) for uploads and downloads with progress, rate, ETA and Cancel.
+  Attachment chips show a progress ring; a failed attachment can be retried.
+- New: Files has breadcrumbs, folders-first natural sorting, file-type icons, relative times, an
+  empty-folder state, and double-click to download.
+- Design: refreshed UI: layered surfaces, floating composer card, icon nav, glass modals and menus.
+- Fix: a slow folder listing could overwrite a newer one, so an upload could land in the previous
+  folder.
+
+## helmd (2026-11-12, model switch)
+- New: `PATCH /sessions/{id}` accepts `model` (see PROTOCOL.md). `/model X` sent to a Claude chat
+  is now recorded in the session's `model`.
+
 ## Windows 1.1.0 (2026-11-12)
 - New: when helmd restarts a dead runner to take your message, the chat shows "Reconnecting to
   <harness>…" until it is idle or running, and the message waits as "Reconnecting…" instead of failing.

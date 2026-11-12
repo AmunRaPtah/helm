@@ -5,10 +5,10 @@
 //! tools/seal.py). `unlock` decrypts them into memory; every request to
 //! helmd then goes through this process over mTLS with the bearer token.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -45,6 +45,47 @@ struct AppState {
     streams: Mutex<HashMap<u64, mpsc::UnboundedSender<Option<String>>>>,
     next_stream: AtomicU64,
     failures: AtomicU32,
+    // Transfer ids the UI asked to cancel; checked on every chunk.
+    cancelled: std::sync::Mutex<HashSet<String>>,
+}
+
+/// Byte counter for one upload or download. Emits throttled "transfer"
+/// events {id, done, total} so the UI can draw a progress bar, and aborts
+/// the transfer once its id lands in AppState.cancelled.
+struct Progress {
+    app: AppHandle,
+    id: String,
+    total: u64,
+    done: u64,
+    last: Instant,
+}
+
+impl Progress {
+    fn new(app: AppHandle, id: String, total: u64) -> Self {
+        let p = Progress { app, id, total, done: 0, last: Instant::now() };
+        p.emit();
+        p
+    }
+    fn emit(&self) {
+        let _ = self.app.emit("transfer", json!({"id": self.id, "done": self.done, "total": self.total}));
+    }
+    fn tick(&mut self, n: usize) -> Result<(), String> {
+        self.done += n as u64;
+        if self.app.state::<AppState>().cancelled.lock().map(|c| c.contains(&self.id)).unwrap_or(false) {
+            return Err("cancelled".into());
+        }
+        if self.last.elapsed() >= Duration::from_millis(150) {
+            self.last = Instant::now();
+            self.emit();
+        }
+        Ok(())
+    }
+    fn finish(self) {
+        self.emit();
+        if let Ok(mut c) = self.app.state::<AppState>().cancelled.lock() {
+            c.remove(&self.id);
+        }
+    }
 }
 
 fn decrypt(password: &str) -> Result<Creds, String> {
@@ -185,6 +226,7 @@ async fn upload_file(
     target: &str,
     local_path: &std::path::Path,
     fields: Vec<(String, String)>,
+    progress: Option<(AppHandle, String)>,
 ) -> Result<Value, String> {
     let shown = local_path.display();
     // Stream the file instead of reading it whole into memory: a multi-GB
@@ -195,15 +237,22 @@ async fn upload_file(
         return Err(format!("{shown}: not a file"));
     }
     let len = meta.len();
-    let body_stream = futures_util::stream::try_unfold(file, |mut f| async move {
+    let tracker = progress.map(|(app, id)| Progress::new(app, id, len));
+    let body_stream = futures_util::stream::try_unfold((file, tracker), |(mut f, mut t)| async move {
         use tokio::io::AsyncReadExt;
         let mut buf = vec![0u8; 256 * 1024];
         let n = f.read(&mut buf).await?;
         if n == 0 {
+            if let Some(t) = t {
+                t.finish();
+            }
             return Ok::<_, std::io::Error>(None);
         }
+        if let Some(t) = t.as_mut() {
+            t.tick(n).map_err(std::io::Error::other)?;
+        }
         buf.truncate(n);
-        Ok(Some((buf, f)))
+        Ok(Some((buf, (f, t))))
     });
     let name = local_path
         .file_name()
@@ -231,11 +280,14 @@ async fn upload(
     endpoint: String,
     local_path: String,
     fields: HashMap<String, String>,
+    transfer: Option<String>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     let c = conn(&state).await?;
     let target = url(&c, &endpoint)?;
-    upload_file(&c, &target, std::path::Path::new(&local_path), fields.into_iter().collect()).await
+    let r = upload_file(&c, &target, std::path::Path::new(&local_path), fields.into_iter().collect(), transfer.clone().map(|id| (app, id))).await;
+    cancelled_message(&state, transfer, r)
 }
 
 /// Files and (empty-or-not) subfolders under `root`, as `/`-joined paths
@@ -321,7 +373,7 @@ async fn upload_folder(
             return Err("locked".into());
         }
         let fields = vec![("dir".to_string(), dest.clone()), ("rel".to_string(), rel.clone())];
-        let r = upload_file(&c, &target, path, fields).await;
+        let r = upload_file(&c, &target, path, fields, None).await;
         let error = match &r {
             Ok(v) => {
                 uploaded += 1;
@@ -362,7 +414,41 @@ async fn upload_folder(
 
 /// Stream a box file (or zipped folder) to a local path.
 #[tauri::command]
-async fn download(remote_path: String, dest: String, state: State<'_, AppState>) -> Result<u64, String> {
+async fn download(
+    remote_path: String,
+    dest: String,
+    transfer: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    let r = download_inner(remote_path, dest, transfer.clone().map(|id| (app, id)), &state).await;
+    cancelled_message(&state, transfer, r)
+}
+
+/// Turn the low-level error of a cancelled transfer into a plain "cancelled"
+/// and forget the id so it can't leak into a later transfer.
+fn cancelled_message<T>(state: &State<'_, AppState>, id: Option<String>, r: Result<T, String>) -> Result<T, String> {
+    let Some(id) = id else { return r };
+    let was = state.cancelled.lock().map(|mut c| c.remove(&id)).unwrap_or(false);
+    match r {
+        Err(_) if was => Err("cancelled".into()),
+        other => other,
+    }
+}
+
+#[tauri::command]
+fn cancel_transfer(id: String, state: State<'_, AppState>) {
+    if let Ok(mut c) = state.cancelled.lock() {
+        c.insert(id);
+    }
+}
+
+async fn download_inner(
+    remote_path: String,
+    dest: String,
+    progress: Option<(AppHandle, String)>,
+    state: &State<'_, AppState>,
+) -> Result<u64, String> {
     use tokio::io::AsyncWriteExt;
     let c = conn(&state).await?;
     let resp = c
@@ -377,6 +463,8 @@ async fn download(remote_path: String, dest: String, state: State<'_, AppState>)
     if !resp.status().is_success() {
         return into_json(resp).await.map(|_| 0);
     }
+    let len = resp.content_length().unwrap_or(0);
+    let mut tracker = progress.map(|(app, id)| Progress::new(app, id, len));
     let part = format!("{dest}.part");
     let written: Result<u64, String> = async {
         let mut f = tokio::fs::File::create(&part).await.map_err(|e| e.to_string())?;
@@ -385,9 +473,15 @@ async fn download(remote_path: String, dest: String, state: State<'_, AppState>)
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| e.to_string())?;
             total += chunk.len() as u64;
+            if let Some(t) = tracker.as_mut() {
+                t.tick(chunk.len())?;
+            }
             f.write_all(&chunk).await.map_err(|e| e.to_string())?;
         }
         f.flush().await.map_err(|e| e.to_string())?;
+        if let Some(t) = tracker.take() {
+            t.finish();
+        }
         Ok(total)
     }
     .await;
@@ -496,7 +590,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![unlock, lock, api, upload, upload_folder, download, ws_open, ws_send, ws_close])
+        .invoke_handler(tauri::generate_handler![unlock, lock, api, upload, upload_folder, download, cancel_transfer, ws_open, ws_send, ws_close])
         .run(tauri::generate_context!())
         .expect("error while running Helm");
 }

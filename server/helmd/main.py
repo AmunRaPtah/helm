@@ -206,12 +206,51 @@ def get_session(sid: str, authorization: Optional[str] = Header(None)):
 @app.patch("/sessions/{sid}")
 async def patch_session(sid: str, request: Request, authorization: Optional[str] = Header(None)):
     check_auth(authorization)
-    _require_session(sid)
+    meta = _require_session(sid)
     body = await request.json()
     fields = {}
     if "title" in body:
         fields["title"] = body["title"]
+    if "model" in body:
+        return await _switch_model(sid, meta, body.get("model") or None, fields)
     return sessionio.update_meta(sid, **fields)
+
+
+async def _switch_model(sid: str, meta: dict, model, fields: dict) -> dict:
+    """Change a chat's model mid-conversation; the transcript is kept.
+    claude switches live via its own /model; codex reads meta["model"] on
+    each turn; the other long-lived runners are restarted with --resume."""
+    loop = asyncio.get_event_loop()
+    hxs = await loop.run_in_executor(None, get_harnesses)
+    hx = next((h for h in hxs if h["id"] == meta["harness"]), None)
+    if not hx or not hx.get("models"):
+        raise HTTPException(400, f"{meta['harness']} has a fixed model")
+    if model is not None and model not in hx["models"]:
+        raise HTTPException(400, f"unknown model for {meta['harness']}: {model}")
+    if model == meta.get("model"):
+        return sessionio.update_meta(sid, **fields)
+    live = tmux_runner_alive(f"hx-{sid}")
+    long_lived = meta["harness"] in adapters.LONG_LIVED
+    restart = long_lived and live and not (meta["harness"] == "claude" and model)
+    if restart and meta.get("state") == "running":
+        raise HTTPException(409, "a turn is running; stop it or wait, then switch model")
+    meta = sessionio.update_meta(sid, model=model, **fields)
+    dm = hx.get("default_model")
+    shown = model or (f"default ({dm})" if dm else "default")
+    if long_lived and live and not restart:
+        # Live switch: the runner forwards "/model X" to claude, which
+        # confirms it in the transcript.
+        ok = await loop.run_in_executor(
+            None, sessionio.write_inbox, sid, _message_op({"text": f"/model {model}"}), 12.0)
+        if not ok:
+            raise HTTPException(503, "runner not accepting input")
+    else:
+        note = "restarting runner" if restart else "applies from the next message"
+        sessionio.append_event(sid, {"type": "system", "text": f"model set to {shown}; {note}"})
+        if restart:
+            sessionio.update_meta(sid, state="starting")
+            await loop.run_in_executor(None, tmux_start_runner, sid, meta["cwd"])
+    return sessionio.read_meta(sid)
 
 
 @app.delete("/sessions/{sid}")
@@ -239,6 +278,13 @@ async def post_message(sid: str, request: Request, authorization: Optional[str] 
     check_auth(authorization)
     meta = _require_session(sid)
     body = await request.json()
+    # A typed "/model X" in a claude chat: keep meta in step so the header,
+    # the model picker and any later runner restart all use the new model.
+    m = re.match(r"^/model\s+(\S+)\s*$", body.get("text") or "")
+    if m and meta["harness"] == "claude":
+        want = None if m.group(1) == "default" else m.group(1)
+        if want != meta.get("model"):
+            meta = sessionio.update_meta(sid, model=want)
     loop = asyncio.get_event_loop()
     revived = await loop.run_in_executor(None, _ensure_runner, sid, meta)
     ok = await loop.run_in_executor(
