@@ -4,6 +4,12 @@
   const esc = (s) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+  const emph = (s) =>
+    s
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>")
+      .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+
   function inline(s) {
     // s is already escaped. Protect code spans first.
     const codes = [];
@@ -11,17 +17,35 @@
       codes.push(c);
       return `\u0000${codes.length - 1}\u0000`;
     });
+    // Links become placeholders too, so later passes (bare-URL autolink,
+    // bold/em) can't rewrite text inside an anchor's attributes. Without this,
+    // "[t](https://a/(https://b)" nested an <a> inside data-href="...".
+    const links = [];
+    const link = (u, t) => {
+      links.push({ u, t });
+      return `\u0001${links.length - 1}\u0001`;
+    };
     s = s
-      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => `<a class="link" data-href="${u}" title="${u}">${t}</a>`)
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (_, p, u) => `${p}<a class="link" data-href="${u}" title="${u}">${u}</a>`)
-      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>")
-      .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
-    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)<]+)\)/g, (_, t, u) => link(u, t))
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)\u0001]+)/g, (_, p, u) => {
+        // Trailing punctuation and an escaped closing quote are not part of the URL.
+        const m = u.match(/^(.*?)((?:[.,;:!?'*_~]|&quot;|&gt;)*)$/);
+        return `${p}${link(m[1], m[1])}${m[2]}`;
+      })
+    ;
+    s = emph(s);
+    const restoreCodes = (x) => x.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
+    s = s.replace(/\u0001(\d+)\u0001/g, (_, i) => {
+      const { u, t } = links[+i];
+      return `<a class="link" data-href="${u}" title="${u}">${restoreCodes(emph(t))}</a>`;
+    });
+    return restoreCodes(s);
   }
 
   function render(src) {
-    const lines = esc(src || "").split("\n");
+    // \u0000/\u0001 are the placeholder delimiters used by inline(); strip any
+    // the model emitted so they can't forge a placeholder.
+    const lines = esc(String(src || "").replace(/[\u0000\u0001]/g, "")).split("\n");
     const out = [];
     let i = 0;
     let para = [];

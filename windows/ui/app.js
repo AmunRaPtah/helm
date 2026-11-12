@@ -61,19 +61,34 @@ function toast(text, kind = "") {
 }
 const fail = (e) => toast(String(e && e.message ? e.message : e), "bad");
 
+const openModals = new Set(); // close functions, so locking dismisses them
 function modal(title, body, buttons) {
   return new Promise((resolve) => {
-    const close = (v) => { root.remove(); document.removeEventListener("keydown", onKey, true); resolve(v); };
-    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(null); } };
-    const root = h("div", { class: "modal-back", onmousedown: (e) => e.target === root && close(null) },
+    let busy = false;
+    const close = (v) => {
+      openModals.delete(close);
+      root.remove();
+      document.removeEventListener("keydown", onKey, true);
+      resolve(v);
+    };
+    const onKey = (e) => { if (e.key === "Escape" && !busy) { e.stopPropagation(); close(null); } };
+    const btns = buttons.map((b) => h("button", { class: `btn ${b.kind || "ghost"}`, onclick: async () => {
+      // An async action (e.g. "Start" creating a session) runs once: a second
+      // click while it is in flight used to create a duplicate session.
+      if (busy) return;
+      if (!b.value) { close(b.result); return; }
+      busy = true;
+      btns.forEach((x) => (x.disabled = true));
+      let v;
+      try { v = await b.value(); } finally { busy = false; btns.forEach((x) => (x.disabled = false)); }
+      if (v !== undefined && openModals.has(close)) close(v);
+    } }, b.label));
+    const root = h("div", { class: "modal-back", onmousedown: (e) => e.target === root && !busy && close(null) },
       h("div", { class: "modal" },
         h("h3", {}, title),
         h("div", { class: "modal-body" }, body),
-        h("div", { class: "modal-foot" },
-          buttons.map((b) => h("button", { class: `btn ${b.kind || "ghost"}`, onclick: async () => {
-            const v = b.value ? await b.value() : b.result;
-            if (v !== undefined) close(v);
-          } }, b.label)))));
+        h("div", { class: "modal-foot" }, btns)));
+    openModals.add(close);
     document.addEventListener("keydown", onKey, true);
     $("modal-root").append(root);
     const f = root.querySelector("input,textarea,select");
@@ -82,13 +97,11 @@ function modal(title, body, buttons) {
 }
 async function ask(title, label, value = "") {
   const inp = h("input", { value, class: "wide" });
-  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") ok.click(); });
-  const p = modal(title, h("label", { class: "field" }, label, inp), [
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.closest(".modal").querySelector(".modal-foot .primary").click(); });
+  return modal(title, h("label", { class: "field" }, label, inp), [
     { label: "Cancel", result: null },
-    { label: "OK", kind: "primary", value: () => inp.value },
+    { label: "OK", kind: "primary", result: undefined, value: () => inp.value },
   ]);
-  const ok = $("modal-root").querySelector(".modal-foot .primary");
-  return p;
 }
 const confirmBox = (title, text, label = "Delete") =>
   modal(title, h("p", {}, text), [{ label: "Cancel", result: false }, { label, kind: "danger", result: true }]);
@@ -131,6 +144,7 @@ async function lockNow() {
   closeChat();
   stopTimers();
   await invoke("lock").catch(() => {});
+  [...openModals].forEach((close) => close(null));
   $("modal-root").innerHTML = "";
   $("app").classList.add("hidden");
   $("lock").classList.remove("hidden");
@@ -258,7 +272,7 @@ function connect() {
       if (c.closed || gen !== c.gen) { invoke("ws_close", { id: sid }).catch(() => {}); return; }
       c.streamId = sid;
       const early = wsBuffer.get(sid) || [];
-      wsBuffer.delete(sid);
+      wsBuffer.clear(); // frames from older, closed streams are never wanted
       early.forEach(onFrame);
     })
     .catch((e) => { setConn(false, e); retryLater(c); });
@@ -289,10 +303,10 @@ function onFrame(p) {
     retryLater(c);
     return;
   }
+  c.backoff = 1000;
   let ev;
   try { ev = JSON.parse(p.data); } catch { return; }
   if (ev.type === "ping" || ev.seq == null) return;
-  c.backoff = 1000;
   apply(c, ev);
   schedule();
 }
@@ -508,8 +522,22 @@ $("act-rename").onclick = async () => {
 $("act-delete").onclick = async () => {
   if (!chat) return;
   const s = chat.session;
-  if (!(await confirmBox("Delete this chat?", `Kills tmux session ${s.tmux}. Files on the box are kept.`))) return;
-  try { await api("DELETE", `/sessions/${s.id}`); closeChat(); refreshSessions(); } catch (e) { fail(e); }
+  // Without ?purge=1 helmd only kills tmux and keeps meta.json, so the chat
+  // reappears in the list on the next refresh. Offer both, clearly labelled.
+  const how = await modal("Delete this chat?", h("p", {},
+    `"Stop" kills tmux session ${s.tmux} but keeps the chat (it can be resumed). `,
+    "\"Delete\" also removes its transcript and uploads from the box."), [
+    { label: "Cancel", result: null },
+    { label: "Stop only", result: "stop" },
+    { label: "Delete", kind: "danger", result: "purge" },
+  ]);
+  if (!how) return;
+  try {
+    await api("DELETE", `/sessions/${s.id}${how === "purge" ? "?purge=1" : ""}`);
+    if (how === "purge") { sessions = sessions.filter((x) => x.id !== s.id); closeChat(); renderSessions(); }
+    else toast("Session stopped");
+    refreshSessions();
+  } catch (e) { fail(e); }
 };
 
 // --- composer ---
@@ -527,7 +555,8 @@ input.addEventListener("keydown", (e) => {
       opts.forEach((o, j) => o.classList.toggle("sel", j === i));
       return;
     }
-    if (e.key === "Tab" || (e.key === "Enter" && i >= 0)) {
+    const exact = i >= 0 && input.value === `/${opts[i].dataset.cmd}`;
+    if (e.key === "Tab" || (e.key === "Enter" && i >= 0 && !exact)) {
       e.preventDefault();
       pickSlash(opts[Math.max(i, 0)].dataset.cmd);
       return;

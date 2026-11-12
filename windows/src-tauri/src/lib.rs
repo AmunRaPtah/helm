@@ -15,7 +15,7 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -90,8 +90,14 @@ async fn conn(state: &State<'_, AppState>) -> Result<Arc<Conn>, String> {
     state.conn.lock().await.clone().ok_or_else(|| "locked".to_string())
 }
 
-fn url(c: &Conn, path: &str) -> String {
-    format!("{}{}", c.base.trim_end_matches('/'), path)
+/// Only absolute paths on the configured host. "@evil.example/x" or
+/// ".evil.example/x" appended to the base would otherwise send the bearer
+/// token to another host.
+fn url(c: &Conn, path: &str) -> Result<String, String> {
+    if !path.starts_with('/') {
+        return Err(format!("bad path: {path}"));
+    }
+    Ok(format!("{}{}", c.base.trim_end_matches('/'), path))
 }
 
 async fn into_json(resp: reqwest::Response) -> Result<Value, String> {
@@ -164,7 +170,7 @@ async fn api(
     let m = reqwest::Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|e| e.to_string())?;
     let mut req = c
         .http
-        .request(m, url(&c, &path))
+        .request(m, url(&c, &path)?)
         .bearer_auth(&c.token)
         .timeout(Duration::from_secs(timeout_secs.unwrap_or(120)));
     if let Some(b) = body {
@@ -182,18 +188,36 @@ async fn upload(
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     let c = conn(&state).await?;
-    let data = tokio::fs::read(&local_path).await.map_err(|e| format!("{local_path}: {e}"))?;
+    let target = url(&c, &endpoint)?;
+    // Stream the file instead of reading it whole into memory: a multi-GB
+    // upload used to need that much RAM in the app.
+    let file = tokio::fs::File::open(&local_path).await.map_err(|e| format!("{local_path}: {e}"))?;
+    let meta = file.metadata().await.map_err(|e| format!("{local_path}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("{local_path}: not a file"));
+    }
+    let len = meta.len();
+    let body_stream = futures_util::stream::try_unfold(file, |mut f| async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 256 * 1024];
+        let n = f.read(&mut buf).await?;
+        if n == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
+        buf.truncate(n);
+        Ok(Some((buf, f)))
+    });
     let name = std::path::Path::new(&local_path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "upload".into());
-    let mut form = reqwest::multipart::Form::new().part("file", reqwest::multipart::Part::bytes(data).file_name(name));
+    let mut form = reqwest::multipart::Form::new().part("file", reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(body_stream), len).file_name(name));
     for (k, v) in fields {
         form = form.text(k, v);
     }
     let resp = c
         .http
-        .post(url(&c, &endpoint))
+        .post(target)
         .bearer_auth(&c.token)
         .timeout(Duration::from_secs(3600))
         .multipart(form)
@@ -210,7 +234,7 @@ async fn download(remote_path: String, dest: String, state: State<'_, AppState>)
     let c = conn(&state).await?;
     let resp = c
         .http
-        .get(url(&c, "/box/fs/download"))
+        .get(url(&c, "/box/fs/download")?)
         .query(&[("path", remote_path.as_str())])
         .bearer_auth(&c.token)
         .timeout(Duration::from_secs(6 * 3600))
@@ -221,16 +245,27 @@ async fn download(remote_path: String, dest: String, state: State<'_, AppState>)
         return into_json(resp).await.map(|_| 0);
     }
     let part = format!("{dest}.part");
-    let mut f = tokio::fs::File::create(&part).await.map_err(|e| e.to_string())?;
-    let mut stream = resp.bytes_stream();
-    let mut total = 0u64;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        total += chunk.len() as u64;
-        f.write_all(&chunk).await.map_err(|e| e.to_string())?;
+    let written: Result<u64, String> = async {
+        let mut f = tokio::fs::File::create(&part).await.map_err(|e| e.to_string())?;
+        let mut stream = resp.bytes_stream();
+        let mut total = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| e.to_string())?;
+            total += chunk.len() as u64;
+            f.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        }
+        f.flush().await.map_err(|e| e.to_string())?;
+        Ok(total)
     }
-    f.flush().await.map_err(|e| e.to_string())?;
-    drop(f);
+    .await;
+    // A dropped connection used to leave a partial "<name>.part" behind.
+    let total = match written {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(e);
+        }
+    };
     let _ = tokio::fs::remove_file(&dest).await;
     tokio::fs::rename(&part, &dest).await.map_err(|e| e.to_string())?;
     Ok(total)
@@ -251,6 +286,12 @@ async fn ws_open(session_id: String, after: u64, app: AppHandle, state: State<'_
     );
     let (tx, mut rx) = mpsc::unbounded_channel::<Option<String>>();
     state.streams.lock().await.insert(id, tx);
+    // lock() may have drained the map between conn() above and the insert;
+    // don't leave a live authenticated stream behind a locked UI.
+    if state.conn.lock().await.is_none() {
+        state.streams.lock().await.remove(&id);
+        return Err("locked".into());
+    }
     let tls = c.tls.clone();
     tauri::async_runtime::spawn(async move {
         let connector = tokio_tungstenite::Connector::Rustls(tls);
@@ -262,10 +303,12 @@ async fn ws_open(session_id: String, after: u64, app: AppHandle, state: State<'_
         let ws = match connected {
             Ok(Ok((ws, _))) => ws,
             Ok(Err(e)) => {
+                app.state::<AppState>().streams.lock().await.remove(&id);
                 let _ = app.emit("ws", json!({"id": id, "closed": true, "error": e.to_string()}));
                 return;
             }
             Err(_) => {
+                app.state::<AppState>().streams.lock().await.remove(&id);
                 let _ = app.emit("ws", json!({"id": id, "closed": true, "error": "connect timed out"}));
                 return;
             }
@@ -291,6 +334,9 @@ async fn ws_open(session_id: String, after: u64, app: AppHandle, state: State<'_
                 }
             }
         }
+        // Streams that end on their own (server close, timeout) were never
+        // removed from the map, so their senders accumulated for the app's life.
+        app.state::<AppState>().streams.lock().await.remove(&id);
         let _ = app.emit("ws", json!({"id": id, "closed": true, "error": error}));
     });
     Ok(id)
