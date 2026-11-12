@@ -1,0 +1,6 @@
+# Sealed credentials: never commit (repo is public). See README.
+src-tauri/creds.bin
+src-tauri/target/
+src-tauri/gen/
+node_modules/
+dist/

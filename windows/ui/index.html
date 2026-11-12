@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Helm</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Lock screen -->
+  <section id="lock" class="lock">
+    <form id="lock-form" class="lock-card" autocomplete="off">
+      <img src="helm-mark.svg" alt="" class="lock-mark" />
+      <h1>Helm</h1>
+      <p class="muted">Enter your password to unlock.</p>
+      <input id="lock-pw" type="password" placeholder="Password" autofocus />
+      <button id="lock-btn" type="submit" class="btn primary wide">Unlock</button>
+      <p id="lock-err" class="err" role="alert"></p>
+      <p class="version small muted" data-version></p>
+    </form>
+  </section>
+
+  <!-- App -->
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="helm-mark.svg" alt="" />
+        <span>Helm</span>
+      </div>
+      <nav class="nav">
+        <button data-view="chats" class="nav-btn active">Chats</button>
+        <button data-view="box" class="nav-btn">Box</button>
+        <button data-view="files" class="nav-btn">Files</button>
+      </nav>
+      <div id="side-chats" class="side-chats">
+        <div class="side-tools">
+          <input id="session-filter" type="search" placeholder="Search chats" />
+          <button id="new-chat" class="btn primary" title="New chat (Ctrl+N)">New</button>
+        </div>
+        <ul id="session-list" class="session-list"></ul>
+      </div>
+      <div class="side-foot">
+        <span id="conn" class="conn">connecting…</span>
+        <span class="version small muted" data-version></span>
+        <button id="lock-now" class="btn ghost" title="Lock (Ctrl+L)">Lock</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section id="view-chats" class="view">
+        <div id="chat-empty" class="empty">
+          <img src="helm-mark.svg" alt="" />
+          <p>Pick a chat on the left, or start a new one.</p>
+        </div>
+        <div id="chat" class="chat hidden">
+          <header class="chat-head">
+            <span id="chat-badge" class="badge"></span>
+            <div class="chat-title">
+              <h2 id="chat-title"></h2>
+              <span id="chat-sub" class="muted mono small"></span>
+            </div>
+            <span id="chat-state" class="state"></span>
+            <div class="chat-actions">
+              <button id="act-interrupt" class="btn warn hidden">Stop</button>
+              <button id="act-resume" class="btn primary hidden">Resume</button>
+              <button id="act-rename" class="btn ghost">Rename</button>
+              <button id="act-delete" class="btn ghost danger">Delete</button>
+            </div>
+          </header>
+          <div id="transcript" class="transcript">
+            <div id="items" class="items"></div>
+            <div id="pending" class="items"></div>
+            <div id="typing" class="typing hidden"><i></i><i></i><i></i></div>
+          </div>
+          <button id="jump" class="jump hidden" title="Jump to latest">↓ Latest</button>
+          <footer class="composer">
+            <div id="attach-chips" class="chips"></div>
+            <ul id="slash" class="slash hidden"></ul>
+            <div class="composer-row">
+              <button id="attach" class="btn ghost" title="Attach files (or drop them here)">＋</button>
+              <textarea id="input" rows="1" placeholder="Message. Enter sends, Shift+Enter for a new line, / for commands, ! runs a shell command"></textarea>
+              <button id="send" class="btn primary">Send</button>
+            </div>
+          </footer>
+        </div>
+      </section>
+
+      <section id="view-box" class="view hidden">
+        <header class="view-head">
+          <h2>Box</h2>
+          <div class="tabs" id="box-tabs">
+            <button data-tab="system" class="tab active">System</button>
+            <button data-tab="tmux" class="tab">Tmux</button>
+            <button data-tab="services" class="tab">Services</button>
+            <button data-tab="shell" class="tab">Shell</button>
+          </div>
+        </header>
+        <div id="box-body" class="box-body"></div>
+      </section>
+
+      <section id="view-files" class="view hidden">
+        <header class="view-head">
+          <h2>Files</h2>
+          <div class="file-tools">
+            <button id="f-up" class="btn ghost" title="Up one folder">↑</button>
+            <input id="f-path" class="mono" spellcheck="false" />
+            <button id="f-refresh" class="btn ghost">Refresh</button>
+            <button id="f-mkdir" class="btn ghost">New folder</button>
+            <button id="f-upload" class="btn primary">Upload</button>
+          </div>
+        </header>
+        <div class="files-wrap"><table class="files"><tbody id="f-list"></tbody></table></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toasts" class="toasts"></div>
+  <script src="markdown.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
