@@ -41,9 +41,13 @@ final class ChatModel {
     @ObservationIgnored private var rawEvents: [HelmEvent] = []
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var openedAt = Date().timeIntervalSince1970
+    /// `updated` as last reported by the server. `session.updated` is also bumped
+    /// locally by every streamed event, so it can't be used to judge staleness.
+    @ObservationIgnored private var serverUpdated: Double
 
     init(session: Session, store: AppStore) {
         self.session = session
+        self.serverUpdated = session.updated
         self.store = store
         self.stream = SessionStream(sessionId: session.id, config: store.config)
         if let log = DiskCache.loadEvents(session.id) {
@@ -59,7 +63,7 @@ final class ChatModel {
     var state: SessionState {
         // The latest status event is fresher than the polled session object,
         // unless the session was updated after it.
-        if let s = transcript.lastState, (transcript.stateChangedAt ?? 0) >= session.updated - 1 { return s }
+        if let s = transcript.lastState, (transcript.stateChangedAt ?? 0) >= serverUpdated - 1 { return s }
         return session.state
     }
 
@@ -95,12 +99,14 @@ final class ChatModel {
 
     func mergeSession(_ s: Session) {
         let wasExited = session.state == .exited
+        serverUpdated = s.updated
         session = s
         if wasExited, s.state != .exited, stream.isRunning { stream.reconnectNow() }
     }
 
     func refreshSession() async {
         if let s = try? await api.session(session.id) {
+            serverUpdated = s.updated
             session = s
             store?.upsert(s)
         }
@@ -137,6 +143,8 @@ final class ChatModel {
             pending.remove(at: i)
             return
         }
+        // Carries ids that aren't ours: sent from another device, so leave our bubbles alone.
+        guard e.clientId == nil, e.queueId == nil else { return }
         // Messages from older servers carry no ids: match on text.
         let t = e.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let i = pending.firstIndex(where: { t.hasPrefix($0.text.trimmingCharacters(in: .whitespacesAndNewlines)) }) {
@@ -175,11 +183,14 @@ final class ChatModel {
         guard canSend else { return }
         draft = ""
         attachments = []
-        let msg = PendingMessage(text: text, attachments: paths)
+        await deliver(PendingMessage(text: text, attachments: paths))
+    }
+
+    private func deliver(_ msg: PendingMessage) async {
         pending.append(msg)
         Haptics.send()
         do {
-            try await api.send(session.id, text: text, attachments: paths, clientId: msg.clientId)
+            try await api.send(session.id, text: msg.text, attachments: msg.attachments, clientId: msg.clientId)
             banner = nil
             if !stream.isRunning { start() }
         } catch {
@@ -189,11 +200,12 @@ final class ChatModel {
         }
     }
 
+    /// Resends a failed message as-is, without touching whatever is in the composer.
+    /// Keeps the id, so if the first attempt did land its echo still clears this bubble.
     func retry(_ p: PendingMessage) async {
+        guard !isExited else { return }
         pending.removeAll { $0.id == p.id }
-        draft = p.text
-        attachments = p.attachments.map { Attachment(filename: ($0 as NSString).lastPathComponent, path: $0) }
-        await send()
+        await deliver(PendingMessage(id: p.id, text: p.text, attachments: p.attachments))
     }
 
     func discard(_ p: PendingMessage) { pending.removeAll { $0.id == p.id } }
@@ -218,6 +230,7 @@ final class ChatModel {
         defer { isResuming = false }
         do {
             let s = try await api.resume(session.id)
+            serverUpdated = s.updated
             session = s
             store?.upsert(s)
             banner = nil

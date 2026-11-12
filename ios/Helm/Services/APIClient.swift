@@ -7,7 +7,9 @@ struct APIClient {
 
     private static let session: URLSession = {
         let c = URLSessionConfiguration.default
-        c.timeoutIntervalForRequest = 20
+        // Idle (no-bytes) timeout. helmd may hold a send up to ~30s while it
+        // revives a dead runner, so this must exceed that.
+        c.timeoutIntervalForRequest = 60
         c.waitsForConnectivity = false
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: c, delegate: ClientCertDelegate.shared, delegateQueue: nil)
@@ -73,7 +75,11 @@ struct APIClient {
         var body: [String: JSONValue] = ["text": .string(text)]
         if let clientId { body["client_id"] = .string(clientId) }
         if !attachments.isEmpty { body["attachments"] = .array(attachments.map { .string($0) }) }
-        _ = try await request("POST", "/sessions/\(id)/messages", body: .object(body))
+        // helmd may wait up to 30s for a revived runner to take the message, past the 20s default.
+        var req = try makeRequest("POST", "/sessions/\(id)/messages", query: [], auth: true)
+        req.timeoutInterval = 60
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        _ = try await perform(req, body: try JSONEncoder().encode(JSONValue.object(body)))
     }
 
     func dequeue(_ id: String, queueId: String) async throws {
