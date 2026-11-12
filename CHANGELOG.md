@@ -10,6 +10,12 @@ was already released.
 
 Versions are `MAJOR.MINOR.PATCH`: patch for fixes, minor for features, major for breaking changes.
 
+## iOS 1.2.0 (2026-11-12)
+- New: when helmd restarts a dead runner to take your message, the chat shows "Reconnecting to
+  <harness>…" (amber) instead of "Working", and the message stays "Sending…" rather than failing.
+- New: a failed attachment upload is no longer silently dropped. Its chip turns red; tap it to
+  retry or remove it. Sending is blocked, with a short explanation, while any upload has failed.
+
 ## iOS 1.1.1 (2026-11-12)
 - Fix: a message sent from another device no longer removes your own in-flight message.
 - Fix: Retry resends the failed message as-is instead of overwriting your draft.

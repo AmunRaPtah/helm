@@ -16,7 +16,11 @@ struct Attachment: Identifiable, Equatable {
     var filename: String
     var path: String?
     var error: String?
+    /// Kept until the upload succeeds, so a failed one can be retried.
+    var data: Data? = nil
+    var mimeType = "application/octet-stream"
     var isUploading: Bool { path == nil && error == nil }
+    var isFailed: Bool { error != nil }
 }
 
 /// State for one open chat: transcript, live stream, composer.
@@ -69,8 +73,11 @@ final class ChatModel {
 
     var isRunning: Bool { state == .running || state == .starting }
     var isExited: Bool { state == .exited }
+    /// The runner is (re)starting, e.g. helmd reviving a dead runner on send.
+    var isReconnecting: Bool { state == .starting }
+    var hasFailedAttachments: Bool { attachments.contains { $0.isFailed } }
     var canSend: Bool {
-        !isExited && !attachments.contains { $0.isUploading }
+        !isExited && !attachments.contains { $0.isUploading } && !hasFailedAttachments
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments.contains { $0.path != nil })
     }
 
@@ -241,13 +248,30 @@ final class ChatModel {
     }
 
     func upload(data: Data, filename: String, mimeType: String) async {
-        let a = Attachment(filename: filename)
+        let a = Attachment(filename: filename, data: data, mimeType: mimeType)
         attachments.append(a)
+        await uploadAttachment(a.id, data: data, filename: filename, mimeType: mimeType)
+    }
+
+    /// Re-uploads an attachment whose upload failed.
+    func retryUpload(_ a: Attachment) async {
+        guard let i = attachments.firstIndex(where: { $0.id == a.id }), attachments[i].isFailed,
+              let data = attachments[i].data else { return }
+        attachments[i].error = nil
+        let mimeType = attachments[i].mimeType
+        Haptics.tap()
+        await uploadAttachment(a.id, data: data, filename: a.filename, mimeType: mimeType)
+    }
+
+    private func uploadAttachment(_ id: UUID, data: Data, filename: String, mimeType: String) async {
         do {
             let path = try await api.upload(sessionId: session.id, data: data, filename: filename, mimeType: mimeType)
-            if let i = attachments.firstIndex(where: { $0.id == a.id }) { attachments[i].path = path }
+            if let i = attachments.firstIndex(where: { $0.id == id }) {
+                attachments[i].path = path
+                attachments[i].data = nil
+            }
         } catch {
-            if let i = attachments.firstIndex(where: { $0.id == a.id }) { attachments[i].error = APIClient.describe(error) }
+            if let i = attachments.firstIndex(where: { $0.id == id }) { attachments[i].error = APIClient.describe(error) }
         }
     }
 

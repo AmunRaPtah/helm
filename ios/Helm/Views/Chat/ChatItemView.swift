@@ -84,6 +84,8 @@ struct UserBubble: View {
 struct PendingBubble: View {
     let message: PendingMessage
     let accent: Color
+    /// The runner is being restarted to take this message; it is still sending, not failed.
+    var reconnecting = false
     var onRetry: () -> Void
     var onDiscard: () -> Void
     var onCancel: () -> Void = {}
@@ -114,7 +116,7 @@ struct PendingBubble: View {
                 .font(.system(.caption, weight: .medium))
                 .buttonStyle(.borderless)
             } else {
-                Text("Sending\u{2026}")
+                Text(reconnecting ? "Sending\u{2026} waiting for the runner" : "Sending\u{2026}")
                     .font(HelmFont.mono(.caption2))
                     .foregroundStyle(HelmColor.textTertiary)
             }

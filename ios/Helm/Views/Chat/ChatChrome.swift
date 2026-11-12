@@ -96,9 +96,12 @@ struct EmptyChatHeader: View {
 /// "Working" indicator shown while the agent runs.
 struct TypingIndicator: View {
     let color: Color
+    var label = "Working"
+    /// Shown amber while the runner is being restarted rather than working.
+    var reconnecting = false
 
     var body: some View {
-        ThinkingIndicator(color: HelmColor.lime, label: "Working")
+        ThinkingIndicator(color: reconnecting ? HelmColor.amber : HelmColor.lime, label: label)
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

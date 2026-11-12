@@ -18,10 +18,20 @@ struct ComposerView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(model.attachments) { a in
-                            AttachmentChip(attachment: a) { model.removeAttachment(a) }
+                            AttachmentChip(attachment: a,
+                                           onRetry: { Task { await model.retryUpload(a) } },
+                                           onRemove: { model.removeAttachment(a) })
                         }
                     }
                     .padding(.horizontal, 2)
+                }
+                if model.hasFailedAttachments {
+                    Label(failedHint, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .lineLimit(3)
+                        .foregroundStyle(HelmColor.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
                 }
             }
             HStack(alignment: .bottom, spacing: 8) {
@@ -72,6 +82,12 @@ struct ComposerView: View {
             photoItems = []
             for item in items { Task { await upload(item) } }
         }
+    }
+
+    private var failedHint: String {
+        var reason = ""
+        if let e = model.attachments.first(where: { $0.isFailed })?.error, !e.isEmpty { reason = " (\(e))" }
+        return "Upload failed\(reason). Tap the attachment to retry, or remove it to send without it."
     }
 
     private var placeholder: String {
@@ -187,20 +203,35 @@ enum ImageEncoding {
 
 struct AttachmentChip: View {
     let attachment: Attachment
+    var onRetry: () -> Void
     var onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
-            if attachment.isUploading {
-                ProgressView().controlSize(.mini)
-            } else if attachment.error != nil {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            if attachment.isFailed {
+                Button(action: onRetry) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                        Text(attachment.filename)
+                            .lineLimit(1)
+                            .frame(maxWidth: 160)
+                    }
+                    .foregroundStyle(HelmColor.red)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Retry upload of \(attachment.filename)")
+                .accessibilityHint(attachment.error ?? "")
             } else {
-                Image(systemName: PickedFile.icon(for: attachment.filename))
+                if attachment.isUploading {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: PickedFile.icon(for: attachment.filename))
+                }
+                Text(attachment.filename)
+                    .lineLimit(1)
+                    .frame(maxWidth: 160)
             }
-            Text(attachment.error ?? attachment.filename)
-                .lineLimit(1)
-                .frame(maxWidth: 160)
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
             }
@@ -210,6 +241,7 @@ struct AttachmentChip: View {
         .font(.caption)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color(.tertiarySystemFill), in: Capsule())
+        .background(attachment.isFailed ? HelmColor.red.opacity(0.12) : Color(uiColor: .tertiarySystemFill), in: Capsule())
+        .overlay(Capsule().strokeBorder(attachment.isFailed ? HelmColor.red.opacity(0.5) : Color.clear, lineWidth: 1))
     }
 }

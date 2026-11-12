@@ -30,14 +30,16 @@ struct ChatView: View {
                                 .transition(HelmMotion.appear)
                         }
                         ForEach(model.pending) { p in
-                            PendingBubble(message: p, accent: accent,
+                            PendingBubble(message: p, accent: accent, reconnecting: model.isReconnecting,
                                           onRetry: { Task { await model.retry(p) } },
                                           onDiscard: { model.discard(p) },
                                           onCancel: { Task { await model.cancelQueued(p) } })
                             .transition(HelmMotion.appear)
                         }
                         if model.isRunning {
-                            TypingIndicator(color: accent)
+                            TypingIndicator(color: accent,
+                                            label: model.isReconnecting ? startingLabel : "Working",
+                                            reconnecting: model.isReconnecting)
                                 .transition(HelmMotion.appear)
                         }
                     }
@@ -47,6 +49,7 @@ struct ChatView: View {
                     .helmAnimation(HelmMotion.spring, value: model.transcript.items.count)
                     .helmAnimation(HelmMotion.spring, value: model.pending.count)
                     .helmAnimation(HelmMotion.spring, value: model.isRunning)
+                    .helmAnimation(HelmMotion.spring, value: model.isReconnecting)
                     // Outside the LazyVStack so it is never unloaded when the
                     // user scrolls far up.
                     BottomFollowSentinel()
@@ -143,6 +146,12 @@ struct ChatView: View {
         } message: {
             Text("Kills tmux session \(model.session.tmux). Files on the box are kept.")
         }
+    }
+
+    /// "Reconnecting to Claude…" when helmd revives a dead runner; "Starting" for a new chat.
+    private var startingLabel: String {
+        let verb = model.transcript.isEmpty ? "Starting" : "Reconnecting to"
+        return "\(verb) \(HarnessStyle.of(model.session.harness).shortName)\u{2026}"
     }
 
     private var scrollKey: String {

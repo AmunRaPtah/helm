@@ -411,7 +411,7 @@ struct ThinkingIndicator: View {
         .background(Capsule().fill(HelmColor.raised))
         .overlay(Capsule().strokeBorder(HelmColor.hairline, lineWidth: 1))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Working")
+        .accessibilityLabel(label ?? "Working")
     }
 
     private func bars(phase: Double) -> some View {
