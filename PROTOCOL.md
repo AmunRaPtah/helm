@@ -119,7 +119,7 @@ that only emits final `assistant` events is valid.
 | PATCH | `/sessions/{id}` | `{title?}` | `Session` |
 | DELETE | `/sessions/{id}` | | `{"ok":true}` (kills tmux, keeps files unless `?purge=1`) |
 | GET | `/sessions/{id}/events?after=N&limit=500` | | `[Event]` |
-| POST | `/sessions/{id}/messages` | `{text, attachments?: [path], client_id?}` | `{"ok":true,"queued":bool}`; sent mid-turn it is queued, not rejected |
+| POST | `/sessions/{id}/messages` | `{text, attachments?: [path], client_id?}` | `{"ok":true,"queued":bool,"revived":bool}`; sent mid-turn it is queued, not rejected. `revived` means the chat's runner was dead and was restarted to take this message (a `status` event `state:"starting"`, detail `"runner was not running; restarted on send"`, is streamed first, so clients can show "Reconnecting…") |
 | DELETE | `/sessions/{id}/queue/{queue_id}` | | `{"ok":true}`, cancel one queued message |
 | DELETE | `/sessions/{id}/queue` | | `{"ok":true}`, cancel all queued messages |
 | GET | `/sessions/{id}/commands` | | `{"commands":[name],"shell":true}`, slash commands for `/` completion |

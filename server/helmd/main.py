@@ -246,7 +246,8 @@ async def post_message(sid: str, request: Request, authorization: Optional[str] 
     if not ok:
         raise HTTPException(503, "runner not accepting input")
     # Messages sent mid-turn are queued by the runner, not rejected.
-    return {"ok": True, "queued": meta.get("state") == "running" or bool(meta.get("queue"))}
+    return {"ok": True, "queued": meta.get("state") == "running" or bool(meta.get("queue")),
+            "revived": revived}
 
 
 def _ensure_runner(sid: str, meta: dict) -> bool:
