@@ -52,10 +52,19 @@ struct SessionsListView: View {
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await store.refreshHarnesses()
+            // Keep polling while a chat is open too. If the list only refreshed
+            // after coming back, rows would reorder (the chat just used jumps to
+            // the top) a moment after the list reappears, and a tap landing
+            // during that move opened the wrong chat.
             while !Task.isCancelled {
-                if path.isEmpty { await store.refresh() }
+                await store.refresh()
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
             }
+        }
+        // Coming back from a chat: settle the order now, during the pop
+        // animation, before the list can be tapped.
+        .onChange(of: path.isEmpty) { _, isEmpty in
+            if isEmpty { Task { await store.refresh() } }
         }
     }
 
