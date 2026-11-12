@@ -85,7 +85,11 @@ def candidates(cfg: dict = None) -> list:
     for s in sessions_with_idle():
         if s["attached"] or s["name"] in PROTECTED:
             continue
-        if not s["is_helm"] and not cfg["include_non_helm"]:
+        # An hx-* name alone is not proof the chat is ours: another helmd (a
+        # test instance, a second HELM_HOME) shares the tmux server. Without
+        # our meta it is treated like any non-helm session.
+        is_ours = s["is_helm"] and sessionio.read_meta(s["name"][3:]) is not None
+        if not is_ours and not cfg["include_non_helm"]:
             continue
         if s["idle_hours"] is not None and s["idle_hours"] >= cfg["idle_hours"]:
             picked.append(s)

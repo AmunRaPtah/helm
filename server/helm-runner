@@ -284,24 +284,31 @@ class Runner:
         to the user but not sent to the harness."""
         call_id = f"sh-{new_id()}"
         self.emit({"type": "tool_call", "call_id": call_id, "name": "shell", "input": cmd})
-        self.child = subprocess.Popen(
-            ["bash", "-lc", cmd], cwd=self.meta["cwd"], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            errors="replace", preexec_fn=os.setsid)
-        self.child_pgid = os.getpgid(self.child.pid)
+        # A long-lived harness keeps running between turns: park it while the
+        # shell command owns self.child (so interrupt hits the command), then
+        # put it back. Overwriting it orphaned the harness and made the next
+        # message spawn a second one.
+        saved = (self.child, self.child_pgid)
         try:
-            out, _ = self.child.communicate(timeout=SHELL_TIMEOUT)
-            rc = self.child.returncode
-        except subprocess.TimeoutExpired:
-            os.killpg(self.child_pgid, signal.SIGKILL)
-            out, _ = self.child.communicate()
-            rc = f"killed after {SHELL_TIMEOUT}s"
+            self.child = subprocess.Popen(
+                ["bash", "-lc", cmd], cwd=self.meta["cwd"], stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                errors="replace", preexec_fn=os.setsid)
+            self.child_pgid = os.getpgid(self.child.pid)
+            try:
+                out, _ = self.child.communicate(timeout=SHELL_TIMEOUT)
+                rc = self.child.returncode
+            except subprocess.TimeoutExpired:
+                os.killpg(self.child_pgid, signal.SIGKILL)
+                out, _ = self.child.communicate()
+                rc = f"killed after {SHELL_TIMEOUT}s"
+        finally:
+            self.child, self.child_pgid = saved
         if len(out) > SHELL_OUTPUT_MAX:
             half = SHELL_OUTPUT_MAX // 2
             out = f"{out[:half]}\n[... {len(out) - SHELL_OUTPUT_MAX} chars cut ...]\n{out[-half:]}"
         self.emit({"type": "tool_result", "call_id": call_id, "is_error": rc != 0,
                    "output": f"{out}\n[exit {rc}]".lstrip("\n")})
-        self.child = self.child_pgid = None
 
     # ---------------- interrupt ----------------
 
@@ -332,13 +339,19 @@ class Runner:
                            "queue_id": item["queue_id"], "client_id": item.get("client_id")})
                 self.set_state("running")
                 self.emit({"type": "status", "state": "running", "detail": None})
-                if text.startswith("!") and len(text.strip()) > 1:
-                    self.run_shell(text[1:].strip())
-                    self.turn_done()
-                elif long_lived:
-                    self.send_long_lived(text, attachments)
-                else:
-                    self.send_codex(text, attachments)
+                try:
+                    if text.startswith("!") and len(text.strip()) > 1:
+                        self.run_shell(text[1:].strip())
+                        self.turn_done()
+                    elif long_lived:
+                        self.send_long_lived(text, attachments)
+                    else:
+                        self.send_codex(text, attachments)
+                        self.turn_done()
+                except (OSError, ValueError) as e:
+                    # One bad turn (unreadable attachment, harness pipe closed,
+                    # binary missing) must not take the whole chat down.
+                    self.emit({"type": "error", "text": f"turn failed: {e}"})
                     self.turn_done()
         except Exception as e:
             self.emit({"type": "error", "text": f"runner crashed: {e}"})

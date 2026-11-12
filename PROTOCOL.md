@@ -139,7 +139,7 @@ bounded (shell/tmux/transcript capped at ~20 KB).
 | GET | `/box/system` | | `{uptime_seconds, loadavg:[3], cpus, mem_total_mb, mem_available_mb, mem_used_mb, swap_total_mb, swap_used_mb, disk_total_gb, disk_free_gb, disk_used_pct, hostname, now}` |
 | GET | `/box/tmux` | | `{"sessions":[{name, windows, created, attached, is_helm, last_active, idle_hours}]}` (all tmux sessions, not just `hx-*`) |
 | GET | `/box/tmux/{name}/capture?lines=200` | | `{name, text}` last N lines of the pane |
-| POST | `/box/tmux/{name}/send` | `{keys}` | `{ok}` sends keys + Enter |
+| POST | `/box/tmux/{name}/send` | `{keys}` | `{ok}` types keys literally (no tmux key names or flags), then Enter |
 | GET | `/box/reaper` | | `{config:{enabled, idle_hours, include_non_helm}, candidates, last_run, interval_seconds}` auto-kill of idle tmux sessions (default on, 24h, `hx-*` only; attached and `main` never) |
 | PUT | `/box/reaper` | `{enabled?, idle_hours?, include_non_helm?}` | same as GET; persisted in `$HELM_HOME/reaper.json` |
 | POST | `/box/reaper/run` | | `{killed, ...status}` reap now; killed Helm sessions are marked `exited` and can be resumed |

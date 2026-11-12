@@ -13,7 +13,9 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Iterator, Optional
 
-TRASH_DIR = Path.home() / ".helm" / "trash"
+from . import config
+
+TRASH_DIR = config.HELM_HOME / "trash"
 TRASH_DAYS = 7
 TREE_MAX_FILES = 20000
 

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -20,7 +21,8 @@ from pathlib import Path
 
 def _run(cmd, timeout=10):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                           timeout=timeout)
         return r.stdout.strip()
     except Exception:
         return ""
@@ -111,8 +113,13 @@ def tmux_kill(name: str) -> bool:
 
 def tmux_send(name: str, keys: str) -> bool:
     """Send literal keys to a tmux session, then Enter."""
-    r = subprocess.run(["tmux", "send-keys", "-t", name, keys, "Enter"],
+    # -l -- : the text is typed literally. Without it tmux parsed a leading
+    # "-" as a flag (send fails) and words like "Escape" or "C-c" as keys.
+    r = subprocess.run(["tmux", "send-keys", "-t", name, "-l", "--", keys],
                        capture_output=True)
+    if r.returncode != 0:
+        return False
+    r = subprocess.run(["tmux", "send-keys", "-t", name, "Enter"], capture_output=True)
     return r.returncode == 0
 
 
@@ -315,11 +322,28 @@ def run_shell(cmd: str, cwd: str = None, timeout: int = 120) -> dict:
     if not os.path.isdir(cwd):
         cwd = str(Path.home())
     try:
-        r = subprocess.run(["bash", "-lc", cmd], cwd=cwd, capture_output=True,
-                           text=True, timeout=timeout)
-        out = (r.stdout + ("\n" + r.stderr if r.stderr else ""))
-        return {"ok": r.returncode == 0, "exit": r.returncode, "output": out[-20000:]}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "exit": -1, "output": f"[timed out after {timeout}s]"}
+        # Own process group so a timeout kills the whole tree. Before, only
+        # bash was killed and subprocess.run then waited forever on pipes still
+        # held by its children (`sleep 999 &`, a dev server...), so the request
+        # hung past its timeout. errors="replace": non-UTF-8 output was a 500.
+        p = subprocess.Popen(["bash", "-lc", cmd], cwd=cwd, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, errors="replace", start_new_session=True)
+        try:
+            so, se = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                so, se = p.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                so, se = "", ""
+            out = (so or "") + ("\n" + se if se else "")
+            return {"ok": False, "exit": -1,
+                    "output": (out[-19000:] + f"\n[timed out after {timeout}s]").lstrip("\n")}
+        out = (so + ("\n" + se if se else ""))
+        return {"ok": p.returncode == 0, "exit": p.returncode, "output": out[-20000:]}
     except Exception as e:
         return {"ok": False, "exit": -1, "output": str(e)[:1000]}

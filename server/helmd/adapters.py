@@ -160,8 +160,10 @@ def claude_cmd(meta):
 def claude_input_line(text, attachments):
     content = [{"type": "text", "text": text}]
     for a in attachments or []:
-        if _is_image(a):
+        if _is_image(a) and os.path.isfile(a):
             content.append(_image_block(a))
+        elif _is_image(a):
+            content[0]["text"] += f"\n[attached image not found on box: {a}]"
         else:
             content[0]["text"] += f"\n[attached file: {a}]"
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
@@ -185,7 +187,12 @@ def claude_parse(obj):
         if ev.get("type") == "content_block_delta":
             delta = ev.get("delta", {})
             if delta.get("type") == "text_delta" and delta.get("text"):
-                msg_id = obj.get("message_id") or obj.get("parent_tool_use_id") or "stream"
+                # Claude tags partial events with api_message_id, which equals
+                # the final assistant message.id, so clients can replace the
+                # streaming bubble with the final one instead of growing a
+                # single "stream" bubble for the whole session.
+                msg_id = (obj.get("api_message_id") or obj.get("message_id")
+                          or obj.get("parent_tool_use_id") or "stream")
                 events.append({"type": "assistant_delta", "msg_id": msg_id, "text": delta["text"]})
     elif t == "assistant":
         msg = obj.get("message", {})
@@ -347,7 +354,8 @@ def codex_cmd(meta, text, attachments):
     non_images = [a for a in (attachments or []) if not _is_image(a)]
     for a in non_images:
         text += f"\n[attached file: {a}]"
-    cmd.append(text)
+    # "--" so a message starting with "-" is the prompt, not an unknown flag.
+    cmd += ["--", text]
     return cmd, env
 
 

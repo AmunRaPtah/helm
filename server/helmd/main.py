@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -23,6 +24,7 @@ app = FastAPI()
 
 VALID_PERMISSIONS = {"bypass", "acceptEdits", "default", "plan"}
 VALID_HARNESSES = {h["id"] for h in get_harnesses()}
+SID_RE = re.compile(r"^[a-z0-9]{1,32}$")
 
 
 # ---------- auth ----------
@@ -40,6 +42,39 @@ def check_auth(authorization: Optional[str] = Header(None)):
 def tmux_has_session(name: str) -> bool:
     r = subprocess.run(["tmux", "has-session", "-t", name], capture_output=True)
     return r.returncode == 0
+
+
+def tmux_live_runners() -> set:
+    """Names of tmux sessions whose pane is still running. Sessions are made
+    with remain-on-exit, so a runner that exited leaves a dead pane behind and
+    has-session keeps saying yes; only pane_dead tells the truth."""
+    r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{session_name} #{pane_dead}"],
+                       capture_output=True, text=True, errors="replace")
+    if r.returncode != 0 and not ("no server" in r.stderr or "No such file" in r.stderr):
+        return None  # tmux trouble: unknown, so callers must not act on it
+    live = set()
+    for line in r.stdout.splitlines():
+        name, _, dead = line.rpartition(" ")
+        if dead == "0":
+            live.add(name)
+    return live
+
+
+def tmux_runner_alive(name: str) -> bool:
+    live = tmux_live_runners()
+    return tmux_has_session(name) if live is None else name in live
+
+
+def _reconcile(meta: dict, live: set, detail: str) -> dict:
+    """Mark a session exited when it claims idle/running but its runner is
+    gone, so the app shows "exited" (and offers resume) instead of a chat that
+    silently swallows messages. "starting" is left alone: the runner may still
+    be coming up."""
+    if live is not None and meta.get("state") in ("running", "idle") and f"hx-{meta['id']}" not in live:
+        sessionio.update_meta(meta["id"], state="exited")
+        sessionio.append_event(meta["id"], {"type": "status", "state": "exited", "detail": detail})
+        meta = sessionio.read_meta(meta["id"]) or meta
+    return meta
 
 
 def tmux_kill_session(name: str) -> None:
@@ -70,6 +105,7 @@ def on_startup():
     # behind it (e.g. the box rebooted) is marked exited.
     if not config.SESSIONS_DIR.exists():
         return
+    live = tmux_live_runners()
     for d in config.SESSIONS_DIR.iterdir():
         if not d.is_dir():
             continue
@@ -77,7 +113,9 @@ def on_startup():
         meta = sessionio.read_meta(sid)
         if not meta:
             continue
-        if meta.get("state") in ("starting", "running", "idle") and not tmux_has_session(f"hx-{sid}"):
+        if live is None:
+            break
+        if meta.get("state") in ("starting", "running", "idle") and f"hx-{sid}" not in live:
             sessionio.update_meta(sid, state="exited")
             sessionio.append_event(sid, {"type": "status", "state": "exited",
                                           "detail": "helmd restart: runner/tmux not found"})
@@ -101,10 +139,11 @@ def list_sessions(authorization: Optional[str] = Header(None)):
     check_auth(authorization)
     out = []
     if config.SESSIONS_DIR.exists():
+        live = tmux_live_runners()
         for d in config.SESSIONS_DIR.iterdir():
             meta = sessionio.read_meta(d.name)
             if meta:
-                out.append(meta)
+                out.append(_reconcile(meta, live, "runner is not running"))
     out.sort(key=lambda m: m.get("updated", 0), reverse=True)
     return out
 
@@ -116,6 +155,8 @@ async def create_session(request: Request, authorization: Optional[str] = Header
     harness = body.get("harness")
     if harness not in VALID_HARNESSES:
         raise HTTPException(400, f"unknown harness {harness!r}")
+    if not next((h for h in get_harnesses() if h["id"] == harness), {}).get("available", True):
+        raise HTTPException(400, f"harness {harness!r} is not available on this box")
     permission = body.get("permission", "bypass")
     if permission not in VALID_PERMISSIONS:
         raise HTTPException(400, f"bad permission {permission!r}")
@@ -148,6 +189,8 @@ async def create_session(request: Request, authorization: Optional[str] = Header
 
 
 def _require_session(sid: str) -> dict:
+    if not SID_RE.match(sid or ""):
+        raise HTTPException(404, "no such session")
     meta = sessionio.read_meta(sid)
     if not meta:
         raise HTTPException(404, "no such session")
@@ -157,7 +200,7 @@ def _require_session(sid: str) -> dict:
 @app.get("/sessions/{sid}")
 def get_session(sid: str, authorization: Optional[str] = Header(None)):
     check_auth(authorization)
-    return _require_session(sid)
+    return _reconcile(_require_session(sid), tmux_live_runners(), "runner is not running")
 
 
 @app.patch("/sessions/{sid}")
@@ -174,10 +217,13 @@ async def patch_session(sid: str, request: Request, authorization: Optional[str]
 @app.delete("/sessions/{sid}")
 def delete_session(sid: str, purge: int = Query(0), authorization: Optional[str] = Header(None)):
     check_auth(authorization)
-    _require_session(sid)
+    meta = _require_session(sid)
     tmux_kill_session(f"hx-{sid}")
     if purge:
         shutil.rmtree(config.session_dir(sid), ignore_errors=True)
+    elif meta.get("state") != "exited":
+        sessionio.update_meta(sid, state="exited")
+        sessionio.append_event(sid, {"type": "status", "state": "exited", "detail": "stopped"})
     return {"ok": True}
 
 
@@ -207,7 +253,7 @@ def _ensure_runner(sid: str, meta: dict) -> bool:
     """If the chat's tmux runner is gone (tmux server restart, reaper, crash),
     restart it so the message is delivered instead of timing out with 503.
     Returns True when a runner was (re)started."""
-    if tmux_has_session(f"hx-{sid}"):
+    if tmux_runner_alive(f"hx-{sid}"):
         return False
     sessionio.append_event(sid, {"type": "status", "state": "starting",
                                   "detail": "runner was not running; restarted on send"})
@@ -539,20 +585,28 @@ async def stream(ws: WebSocket, sid: str):
     if not token or not expected or not hmac.compare_digest(token.encode(), expected.encode()):
         await ws.close(code=4401)
         return
-    meta = sessionio.read_meta(sid)
+    meta = sessionio.read_meta(sid) if SID_RE.match(sid or "") else None
     if not meta:
         await ws.close(code=4404)
         return
     await ws.accept()
-    after = int(ws.query_params.get("after", 0))
+    try:
+        after = max(0, int(ws.query_params.get("after", 0)))
+    except ValueError:
+        after = 0
 
     stop = asyncio.Event()
 
     async def sender():
         last_sent = after
         last_ping = time.time()
+        offset = 0
+        loop = asyncio.get_event_loop()
         while not stop.is_set():
-            evs = sessionio.read_events(sid, after=last_sent, limit=1000)
+            # Byte-offset tail: only new bytes are parsed, and off the event
+            # loop, so a multi-MB chat no longer stalls every other request.
+            evs, offset = await loop.run_in_executor(
+                None, sessionio.tail_events, sid, offset, last_sent)
             for ev in evs:
                 await ws.send_text(json.dumps(ev))
                 last_sent = ev["seq"]
@@ -570,8 +624,14 @@ async def stream(ws: WebSocket, sid: str):
                 except json.JSONDecodeError:
                     continue
                 if msg.get("type") == "message":
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, sessionio.write_inbox, sid, _message_op(msg))
+                    loop = asyncio.get_event_loop()
+                    m = sessionio.read_meta(sid) or meta
+                    revived = await loop.run_in_executor(None, _ensure_runner, sid, m)
+                    ok = await loop.run_in_executor(
+                        None, sessionio.write_inbox, sid, _message_op(msg),
+                        30.0 if revived else 12.0)
+                    if not ok:
+                        sessionio.append_event(sid, {"type": "error", "text": "message not delivered: runner not accepting input"})
                 elif msg.get("type") == "dequeue":
                     await asyncio.get_event_loop().run_in_executor(
                         None, sessionio.write_inbox, sid,
