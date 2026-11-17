@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""helm-send: push files or a note from the box to the Helm app's Drop thread.
+
+  helm-send report.pdf                 send a file (snapshotted into /root/drop/to-phone)
+  helm-send a.png b.png -c "plots"     several files, one caption on the last
+  helm-send results/                   a folder (the phone downloads it as a .zip)
+  helm-send -m "build finished"        a text note
+  helm-send --in-place big.mkv         don't copy; the bubble points at the original
+  helm-send --list [N]                 show the last N items (default 10)
+"""
+import argparse
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
+from helmd import drop  # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="helm-send", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("paths", nargs="*")
+    ap.add_argument("-m", "--message", help="send a text note")
+    ap.add_argument("-c", "--caption", default="", help="caption for the (last) file")
+    ap.add_argument("--in-place", action="store_true", help="reference the original, no copy")
+    ap.add_argument("--list", nargs="?", const=10, type=int, metavar="N")
+    a = ap.parse_args()
+
+    if a.list is not None:
+        for i in drop.list_items()["items"][-a.list:]:
+            arrow = "->" if i["from"] == "box" else "<-"
+            body = i.get("name") or i.get("text", "")
+            print(f'{i["id"]:>5} {arrow} {body}' + (f'  ({i["path"]})' if i.get("path") else ""))
+        return 0
+    if not a.paths and not a.message:
+        ap.print_usage(sys.stderr)
+        return 2
+    try:
+        for n, p in enumerate(a.paths):
+            cap = a.caption if n == len(a.paths) - 1 else ""
+            it = drop.send_to_phone(p, cap, copy=not a.in_place)
+            print(f'sent {it["name"]} ({it["size"]} bytes) -> {it["path"]}')
+        if a.message:
+            drop.note(a.message, "box")
+            print("sent note")
+    except drop.DropError as e:
+        print(f"helm-send: {e.msg}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

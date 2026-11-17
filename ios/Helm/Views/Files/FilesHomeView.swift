@@ -12,6 +12,7 @@ struct FilesHomeView: View {
                 Section {
                     place("Home", "/root", "house")
                     place("Projects", "/root/projects", "hammer")
+                    place("Drop", "/root/drop", "paperplane")
                     place("Uploads", uploadDir, "tray.and.arrow.down")
                     place("Everything", "/", "externaldrive")
                 } header: {

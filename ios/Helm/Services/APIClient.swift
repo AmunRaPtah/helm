@@ -289,14 +289,23 @@ struct APIClient {
     /// rel ("Folder/sub/a.pdf") rebuilds folder structure under dir.
     func fsUpload(file: URL, filename: String, dir: String, rel: String? = nil,
                   progress: (@Sendable (Int64) -> Void)? = nil) async throws -> String {
+        var fields = ["dir": dir]
+        if let rel { fields["rel"] = rel }
+        let data = try await streamUpload("/box/upload", fields: fields, file: file, filename: filename, progress: progress)
+        guard let path = JSONValue.parse(data)?["path"]?.string else {
+            throw APIError.decoding("upload returned no path")
+        }
+        return path
+    }
+
+    private func streamUpload(_ path: String, fields: [String: String], file: URL, filename: String,
+                              progress: (@Sendable (Int64) -> Void)?) async throws -> Data {
         let boundary = "helm-\(UUID().uuidString)"
         let body = FileManager.default.temporaryDirectory.appendingPathComponent("up-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: body) }
-        var fields = ["dir": dir]
-        if let rel { fields["rel"] = rel }
         let size = try Self.writeMultipart(to: body, boundary: boundary, fields: fields, file: file, filename: filename)
 
-        var req = try makeRequest("POST", "/box/upload", query: [], auth: true)
+        var req = try makeRequest("POST", path, query: [], auth: true)
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = max(120, Double(size) / 100_000)
         let (data, resp): (Data, URLResponse)
@@ -308,10 +317,35 @@ struct APIClient {
         }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw Self.httpError(code, data) }
-        guard let path = JSONValue.parse(data)?["path"]?.string else {
-            throw APIError.decoding("upload returned no path")
+        return data
+    }
+
+    // MARK: Drop (phone <-> box thread)
+
+    func dropList(after: Int = 0) async throws -> DropPage {
+        let v = try await request("GET", "/drop", query: [URLQueryItem(name: "after", value: String(after))])
+        return DropPage(json: v)
+    }
+
+    func dropUpload(file: URL, filename: String, caption: String = "",
+                    progress: (@Sendable (Int64) -> Void)? = nil) async throws -> DropItem {
+        let data = try await streamUpload("/drop/upload", fields: ["caption": caption], file: file,
+                                          filename: filename, progress: progress)
+        guard let v = JSONValue.parse(data), let item = DropItem(json: v) else {
+            throw APIError.decoding("drop upload returned no item")
         }
-        return path
+        return item
+    }
+
+    func dropNote(_ text: String) async throws -> DropItem {
+        let v = try await request("POST", "/drop/note", body: .object(["text": .string(text)]))
+        guard let item = DropItem(json: v) else { throw APIError.decoding("bad drop note") }
+        return item
+    }
+
+    func dropDelete(_ id: Int, deleteFile: Bool) async throws {
+        _ = try await request("DELETE", "/drop/\(id)",
+                              query: [URLQueryItem(name: "delete_file", value: deleteFile ? "1" : "0")])
     }
 
     private static func writeMultipart(to out: URL, boundary: String, fields: [String: String],

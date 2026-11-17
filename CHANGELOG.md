@@ -10,6 +10,19 @@ was already released.
 
 Versions are `MAJOR.MINOR.PATCH`: patch for fixes, minor for features, major for breaking changes.
 
+## iOS 1.3.0 (2026-11-17)
+- New: **Drop** tab, a Telegram-style thread between the phone and the box. Send photos, videos,
+  files and notes with +; a typed note rides along as the caption of the files you attach.
+  Everything sent lands in one folder on the box, `/root/drop`.
+- New: the box can send to the phone. `helm-send <file|folder> [-c caption]` or `helm-send -m "note"`
+  puts it in the thread (a snapshot goes to `/root/drop/to-phone/`). Tap a file to download and
+  preview it; small files arriving while Drop is open download automatically. Folders come as .zip.
+- New: unread badge on the Drop tab for things the box sent (polled while the app is open).
+- New: on the phone, everything sent or received through Drop is kept in
+  Files › On My iPhone › Helm › Drop. The folder button in Drop opens either side.
+- Changed: sharing a file into Helm asks "Send to Drop" or "Upload to a box folder".
+- Files tab: Drop shortcut to `/root/drop`.
+
 ## Windows 1.2.0 (2026-11-12)
 - New: switch model mid-chat. The model chip in the chat header opens a searchable picker, and
   `/model` (bare) does the same; `/model <name>` switches directly on any harness. Claude switches

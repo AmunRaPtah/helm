@@ -156,8 +156,15 @@ bounded (shell/tmux/transcript capped at ~20 KB).
 | GET | `/box/fs/tree?path=` | | `{root, name, files: [{rel, size}], dirs: [rel], total_size}` for a folder download; 413 above 20000 files |
 | GET | `/box/fs/download?path=` | | the file, or a folder as a streamed stored `.zip` (`Content-Disposition: filename*=UTF-8''<name>.zip`) |
 | POST | `/box/fs/mkdir` | `{path, unique?}` | `{path}`; `unique` turns an existing name into `name-1` instead of reusing it (folder uploads use this so they never merge) |
+| GET | `/drop?after=0` | | `{dir, last_id, items:[{id, ts, from:"phone"\|"box", kind:"file"\|"note", name?, path?, size?, text, exists?, is_dir?}]}` the Drop thread; ids only grow, never reused |
+| POST | `/drop/upload` | multipart `file`, form `caption?` | the new item; stored in `/root/drop` (`HELM_DROP_DIR`), clash gets `-1` |
+| POST | `/drop/note` | `{text, sender?: "phone"\|"box"}` | the new item |
+| POST | `/drop/send` | `{path, caption?, in_place?}` | puts a box file/folder in the thread as `from:"box"`; snapshot (hardlink or copy) into `/root/drop/to-phone/` unless `in_place`. Download with `/box/fs/download` |
+| DELETE | `/drop/{id}?delete_file=0` | | `{ok}`; `delete_file=1` also trashes the file, but only if it lives under `/root/drop` |
 | POST | `/box/fs/move` | `{src, dst}` | `{path}`; 409 if `dst` exists |
 | POST | `/box/fs/delete` | `{path}` | `{trashed}`; moved to `~/.helm/trash`, purged after 7 days; `/`, `$HOME` and top-level dirs refused |
+
+The thread is `$HELM_HOME/drop.jsonl` (flock-guarded). `server/helm-send` (linked to `~/.local/bin`) writes it directly: `helm-send FILE... [-c caption]`, `helm-send -m TEXT`, `helm-send --list`.
 
 ## WebSocket
 `GET /sessions/{id}/stream?after=N` upgrades. Server first replays events with

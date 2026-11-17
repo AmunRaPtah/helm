@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from pydantic import BaseModel
 
-from . import adapters, box, config, files, reaper, sessionio
+from . import adapters, box, config, drop, files, reaper, sessionio
 from .harnesses import get_harnesses
 from .idgen import new_id
 
@@ -611,6 +611,66 @@ def fs_delete(body: FsPath, authorization: Optional[str] = Header(None)):
     """Moves to ~/.helm/trash (purged after a week), never unlinks directly."""
     check_auth(authorization)
     return {"trashed": str(_fs(files.trash, body.path))}
+
+
+# ---------- drop (phone <-> box file thread) ----------
+
+def _drop(fn, *args):
+    try:
+        return _fs(fn, *args)
+    except drop.DropError as e:
+        raise HTTPException(e.status, e.msg)
+
+
+class DropNote(BaseModel):
+    text: str
+    sender: str = "phone"
+
+
+class DropSend(BaseModel):
+    path: str
+    caption: str = ""
+    in_place: bool = False  # point at the original instead of snapshotting into to-phone/
+
+
+@app.get("/drop")
+def drop_list(after: int = 0, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return drop.list_items(after)
+
+
+@app.post("/drop/upload")
+async def drop_upload(file: UploadFile = File(...), caption: str = Form(""),
+                      authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    dest = drop.incoming_target(file.filename)
+    part = dest.with_name(f".{dest.name}.helmpart")
+    try:
+        with part.open("wb") as out:
+            while chunk := await file.read(1 << 20):
+                out.write(chunk)
+        os.replace(part, dest)
+    finally:
+        part.unlink(missing_ok=True)
+    return drop.record_incoming(dest, caption)
+
+
+@app.post("/drop/note")
+def drop_note(body: DropNote, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return _drop(drop.note, body.text, body.sender)
+
+
+@app.post("/drop/send")
+def drop_send(body: DropSend, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return _drop(drop.send_to_phone, body.path, body.caption, not body.in_place)
+
+
+@app.delete("/drop/{item_id}")
+def drop_delete(item_id: int, delete_file: int = Query(0), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return _drop(drop.delete, item_id, bool(delete_file))
 
 
 # ---------- WebSocket ----------
