@@ -291,7 +291,7 @@ def agy_input_line(text, attachments):
                         "message": {"role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
 
 
-def agy_parse(obj):
+def agy_parse(obj, turn_n=0):
     events = []
     native_id = None
     ev = obj.get("event")
@@ -330,7 +330,10 @@ def agy_parse(obj):
         if res.get("status") == "ERROR":
             events.append({"type": "error", "text": res.get("error") or "agy turn errored"})
         elif res.get("response"):
-            events.append({"type": "assistant", "msg_id": "result", "text": res["response"]})
+            # Every agy turn reports "result" as the step id, so tag it with
+            # the turn number or each reply overwrites the previous bubble
+            # instead of appending (Transcript.apply keys by msg_id).
+            events.append({"type": "assistant", "msg_id": f"result-{turn_n}", "text": res["response"]})
     return events, native_id
 
 

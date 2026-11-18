@@ -12,6 +12,7 @@ struct ChatItemView: View {
                 .contextMenu { copyButton }
         case .assistant(let text, _):
             MarkdownView(text: text)
+                .equatable()
                 .padding(.vertical, 2)
                 .contentShape(Rectangle())
                 .contextMenu { copyButton }

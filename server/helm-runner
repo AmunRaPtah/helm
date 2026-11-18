@@ -76,6 +76,8 @@ class Runner:
         self.pending = list(self.meta.get("queue") or [])
         self.busy = False          # a turn (or shell command) is in flight
         self.turn_text = False     # current turn produced assistant text
+        self.turn_n = 0            # bumped per turn, so agy's constant "result"
+                                    # msg_id doesn't collide across turns
         self.child = None
         self.child_pgid = None
         self.should_exit = threading.Event()
@@ -183,7 +185,8 @@ class Runner:
         t.start()
 
     def reader_long_lived(self):
-        parse = adapters.agy_parse if self.meta["harness"] == "agy" else adapters.claude_parse
+        is_agy = self.meta["harness"] == "agy"
+        parse = adapters.agy_parse if is_agy else adapters.claude_parse
         for line in self.child.stdout:
             line = line.strip()
             if not line:
@@ -194,7 +197,7 @@ class Runner:
                 self.emit({"type": "system", "text": line[:500]})
                 continue
             try:
-                events, native_id = parse(obj)
+                events, native_id = parse(obj, self.turn_n) if is_agy else parse(obj)
             except Exception as e:  # never crash the runner on a parse surprise
                 self.emit({"type": "system", "text": f"[parse-error] {e}: {line[:300]}"})
                 continue
@@ -239,6 +242,7 @@ class Runner:
         fn = adapters.agy_input_line if self.meta["harness"] == "agy" else adapters.claude_input_line
         self.set_state("running")
         self.turn_text = False
+        self.turn_n += 1
         self.child.stdin.write(fn(text, attachments))
         self.child.stdin.flush()
 

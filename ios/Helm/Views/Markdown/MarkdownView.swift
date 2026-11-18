@@ -1,13 +1,21 @@
 import SwiftUI
 
-struct MarkdownView: View {
+struct MarkdownView: View, Equatable {
     let text: String
+
+    // While a reply streams, only its last block actually changes; everything
+    // above it is done growing. `.equatable()` at the call site (ChatItemView)
+    // and on each BlockView here means SwiftUI skips re-invoking `body` (and
+    // so re-parsing/re-attributing) for anything whose content is unchanged,
+    // instead of redoing the whole message from scratch on every delta.
+    static func == (lhs: MarkdownView, rhs: MarkdownView) -> Bool { lhs.text == rhs.text }
 
     var body: some View {
         let blocks = MarkdownParser.parse(text)
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 BlockView(block: block)
+                    .equatable()
             }
         }
         .foregroundStyle(HelmColor.textPrimary)
@@ -16,7 +24,7 @@ struct MarkdownView: View {
     }
 }
 
-private struct BlockView: View {
+private struct BlockView: View, Equatable {
     let block: MarkdownBlock
 
     var body: some View {
