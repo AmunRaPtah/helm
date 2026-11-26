@@ -166,6 +166,29 @@ bounded (shell/tmux/transcript capped at ~20 KB).
 
 The thread is `$HELM_HOME/drop.jsonl` (flock-guarded). `server/helm-send` (linked to `~/.local/bin`) writes it directly: `helm-send FILE... [-c caption]`, `helm-send -m TEXT`, `helm-send --list`.
 
+### Box controller (iOS 1.4.0)
+Live-control endpoints that back the Box dashboard. Server code is `server/helmd/control.py`.
+A background sampler records CPU, memory, swap, load, network and disk I/O every 5s into a ring buffer.
+Disk checks use statvfs in threads that can be abandoned, so a hung network mount shows up as `ok:false` instead of blocking the request.
+
+| method | path | body | returns |
+|---|---|---|---|
+| GET | `/box/overview` | | `{system, latest, disks, alerts:[{level:crit\|warn, kind, title, detail, target?}], counts:{...}}`. `kind` is one of disk, memory, swap, load, unit, container |
+| GET | `/box/metrics?minutes=60&points=180` | | `{"points":[{t, cpu, mem, swap, load, rx, tx, rd, wr}]}` (rates in bytes/s) |
+| GET | `/box/disks` | | `{"disks":[{mount, type, total_gb, used_gb, free_gb, used_pct, remote, ok, error?}]}` |
+| GET | `/box/docker?stats=0` | | `{containers:[{id, name, image, state, status, health, project, ports, cpu?, mem_pct?, mem?}], age_seconds, refreshing, error?}` (cached and refreshed in the background) |
+| POST | `/box/docker/{name}/{action}` | | `{ok, error, output}`; action is one of start, stop, restart, kill |
+| GET | `/box/docker/{name}/logs?lines=200` | | `{text}` |
+| GET | `/box/procs?sort=cpu&limit=60&q=` | | `{"procs":[{pid, ppid, user, cpu, mem, rss_mb, elapsed, stat, comm, args}]}`; sort is one of cpu, mem, time |
+| POST | `/box/procs/{pid}/signal` | `{signal}` | `{ok, error?}`; TERM, KILL, HUP, INT, STOP or CONT. Refuses pid 1 and helmd itself |
+| GET | `/box/units?q=&state=` | | `{"units":[{name, load, active, sub, description, watched}]}`, sorted failed first, then watched |
+| GET | `/box/units/{name}/logs?lines=200&priority=` | | `{text}` from journalctl (`priority=err` gives errors only) |
+| GET | `/box/journal/errors?minutes=60` | | `{text}` system-wide journal at priority err and above |
+| GET | `/box/network` | | `{peers:[{iface, key, endpoint, allowed, handshake_ago, rx, tx, online}], ports:[{addr, port, proc}], interfaces:[{name, addr}]}` |
+| GET | `/box/cron` | | `{"jobs":[{line, enabled, schedule, command}]}` from root's crontab (read only) |
+| GET / PUT | `/box/actions` | `{actions:[...]}` | `{"actions":[{id, title, icon, cmd, confirm, timeout}]}`, stored in `$HELM_HOME/actions.json` (defaults are seeded) |
+| POST | `/box/actions/{id}/run` | | `{ok, exit, output}` runs the saved command through `bash -lc` |
+
 ## WebSocket
 `GET /sessions/{id}/stream?after=N` upgrades. Server first replays events with
 `seq > after`, then pushes new events live (tail of events.jsonl). Client may

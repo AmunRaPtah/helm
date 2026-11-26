@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from pydantic import BaseModel
 
-from . import adapters, box, config, drop, files, reaper, sessionio
+from . import adapters, box, config, control, drop, files, reaper, sessionio
 from .harnesses import get_harnesses
 from .idgen import new_id
 
@@ -101,6 +101,7 @@ def on_startup():
     config.ensure_dirs()
     config.load_token()  # fail fast if missing
     reaper.start_background()
+    control.start_background()
     # Reconcile: any session claiming to be alive but with no tmux session
     # behind it (e.g. the box rebooted) is marked exited.
     if not config.SESSIONS_DIR.exists():
@@ -759,3 +760,112 @@ async def stream(ws: WebSocket, sid: str):
         stop.set()
         send_task.cancel()
         recv_task.cancel()
+
+
+# ---------- box controller (control.py) ----------
+
+@app.get("/box/overview")
+def box_overview(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.overview()
+
+
+@app.get("/box/metrics")
+def box_metrics(minutes: int = Query(60), points: int = Query(180),
+                authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.metrics(minutes, points)
+
+
+@app.get("/box/disks")
+def box_disks(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"disks": control.disks()}
+
+
+@app.get("/box/docker")
+def box_docker(stats: int = Query(0), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.docker_list(with_stats=bool(stats))
+
+
+@app.post("/box/docker/{name}/{action}")
+def box_docker_action(name: str, action: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.docker_action(name, action)
+
+
+@app.get("/box/docker/{name}/logs")
+def box_docker_logs(name: str, lines: int = Query(200), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.docker_logs(name, lines)
+
+
+@app.get("/box/procs")
+def box_procs(sort: str = Query("cpu"), limit: int = Query(60), q: str = Query(""),
+              authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"procs": control.processes(sort, limit, q)}
+
+
+class SignalBody(BaseModel):
+    signal: str = "TERM"
+
+
+@app.post("/box/procs/{pid}/signal")
+def box_proc_signal(pid: int, body: SignalBody, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.signal_process(pid, body.signal.upper())
+
+
+@app.get("/box/units")
+def box_units(q: str = Query(""), state: str = Query(""), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"units": control.units(q, state)}
+
+
+@app.get("/box/units/{name}/logs")
+def box_unit_logs(name: str, lines: int = Query(200), priority: str = Query(""),
+                  authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.unit_logs(name, lines, priority)
+
+
+@app.get("/box/journal/errors")
+def box_journal_errors(minutes: int = Query(60), authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.journal_errors(minutes)
+
+
+@app.get("/box/network")
+def box_network(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.network()
+
+
+@app.get("/box/cron")
+def box_cron(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"jobs": control.cron()}
+
+
+@app.get("/box/actions")
+def box_actions(authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return {"actions": control.actions()}
+
+
+@app.put("/box/actions")
+async def box_actions_set(request: Request, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    body = await request.json()
+    items = body.get("actions") if isinstance(body, dict) else body
+    if not isinstance(items, list):
+        raise HTTPException(400, "actions must be a list")
+    return {"actions": control.save_actions(items)}
+
+
+@app.post("/box/actions/{aid}/run")
+def box_action_run(aid: str, authorization: Optional[str] = Header(None)):
+    check_auth(authorization)
+    return control.run_action(aid)

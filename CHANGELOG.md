@@ -10,6 +10,16 @@ was already released.
 
 Versions are `MAJOR.MINOR.PATCH`: patch for fixes, minor for features, major for breaking changes.
 
+## iOS 1.4.0 (2026-11-26)
+- New: the **Box** tab is now a live controller dashboard. It shows CPU, memory, load and disk rings, and a 15m or 1h history chart for CPU, memory, swap, load, network or disk I/O.
+- New: an **Attention** strip lists failed units, unhealthy or restarting containers, full disks, hung mounts, and memory, swap or load pressure. Tap an alert to open its logs or the right screen.
+- New: **Containers**. Every Docker container, grouped by compose project, with filters (running, stopped, trouble) and start, stop, restart and kill. Logs can be searched, followed and shared.
+- New: **Services**. Every systemd unit, failed first, with start, stop and restart, the unit journal, and an errors-only view.
+- New: **Processes**. A live top-style table sorted by CPU, memory or age, with search. Swipe to TERM or KILL; tap for HUP, INT and STOP/CONT.
+- New: **Network** (WireGuard peers, interfaces, listening ports) and **Cron** (crontab with schedules in plain English).
+- New: **Quick actions**. One-tap saved commands with an optional confirm step. You can edit, reorder and add them, and their output opens in a sheet.
+- Improved: storage shows every mount and flags ones that are not responding. There is also a 1-hour journal errors view, and you can pull to refresh everywhere.
+
 ## iOS 1.3.0 (2026-11-17)
 - New: **Drop** tab, a Telegram-style thread between the phone and the box. Send photos, videos,
   files and notes with +; a typed note rides along as the caption of the files you attach.

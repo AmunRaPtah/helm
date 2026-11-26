@@ -232,7 +232,7 @@ struct APIClient {
         return ShellResult(json: try await perform(req, body: data))
     }
 
-    private func encode(_ s: String) -> String {
+    func encode(_ s: String) -> String {
         s.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? s
     }
 
@@ -387,7 +387,7 @@ struct APIClient {
     // MARK: Plumbing
 
     /// Accepts either a bare array or an object wrapping it (tolerant of either shape).
-    private func list(_ v: JSONValue, key: String) -> [JSONValue] {
+    func list(_ v: JSONValue, key: String) -> [JSONValue] {
         if let a = v.array { return a }
         if let a = v[key]?.array { return a }
         if let a = v["items"]?.array { return a }
@@ -399,7 +399,7 @@ struct APIClient {
         throw APIError.decoding("missing session id")
     }
 
-    private func makeRequest(_ method: String, _ path: String, query: [URLQueryItem], auth: Bool) throws -> URLRequest {
+    func makeRequest(_ method: String, _ path: String, query: [URLQueryItem], auth: Bool) throws -> URLRequest {
         guard let base = config.baseURL else { throw APIError.notConfigured }
         guard var comps = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
             throw APIError.badURL
@@ -417,7 +417,7 @@ struct APIClient {
     }
 
     @discardableResult
-    private func request(_ method: String, _ path: String, query: [URLQueryItem] = [],
+    func request(_ method: String, _ path: String, query: [URLQueryItem] = [],
                          body: JSONValue? = nil, auth: Bool = true) async throws -> JSONValue {
         var req = try makeRequest(method, path, query: query, auth: auth)
         var data: Data?
@@ -428,7 +428,7 @@ struct APIClient {
         return try await perform(req, body: data)
     }
 
-    private func perform(_ req: URLRequest, body: Data?) async throws -> JSONValue {
+    func perform(_ req: URLRequest, body: Data?) async throws -> JSONValue {
         let result: (Data, URLResponse)
         do {
             if let body {

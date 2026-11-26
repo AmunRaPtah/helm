@@ -1,109 +1,373 @@
 import SwiftUI
 
-/// Remote-control hub for the box: system health, GPU-burst control, services,
-/// tmux sessions, Claude history and a shell console. One screen, drill down.
+/// Box controller dashboard: live vitals and history, alerts that link to the
+/// fix, tiles into every subsystem (containers, services, processes, network,
+/// cron), quick actions, disks, GPU burst and the shell/tmux/files tools.
 struct BoxView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var system: BoxSystem?
+    @State private var overview: BoxOverview?
+    @State private var points: [MetricPoint] = []
     @State private var burst: [BurstModel] = []
-    @State private var services: [BoxService] = []
+    @State private var actions: [QuickAction] = []
     @State private var error: String?
     @State private var busyModel: String?
+    @State private var series: MetricChart.Series = .cpu
+    @State private var minutes = 15
+    @State private var runner = ActionRunner()
+    @State private var tick = 0
+
+    private let grid = [GridItem(.flexible(), spacing: HelmSpace.md), GridItem(.flexible(), spacing: HelmSpace.md)]
 
     var body: some View {
         NavigationStack {
-            List {
-                if let error { errorRow(error) }
-                systemSection
-                burstSection
-                servicesSection
-                activitySection
+            ScrollView {
+                VStack(alignment: .leading, spacing: HelmSpace.xl) {
+                    if let error { errorBanner(error) }
+                    hero
+                    alertsSection
+                    tilesSection
+                    actionsSection
+                    disksSection
+                    burstSection
+                    toolsSection
+                }
+                .padding(.horizontal, HelmSpace.lg)
+                .padding(.bottom, HelmSpace.xxl)
             }
             .helmScreen()
             .navigationTitle("Box")
-            .refreshable { await loadAll() }
+            .refreshable { await refreshAll() }
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
+                await refreshAll()
                 while !Task.isCancelled {
-                    await loadAll()
-                    try? await Task.sleep(nanoseconds: 6_000_000_000)
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    tick += 1
+                    await loadOverview()
+                    if tick % 2 == 0 { await loadMetrics() }
+                    if tick % 6 == 0 { await loadBurst() }
                 }
             }
+            .onChange(of: minutes) { _, _ in Task { await loadMetrics() } }
+            .actionRunner(runner, api: store.api)
         }
     }
 
-    // MARK: System
+    // MARK: Hero: gauges and chart
 
-    @ViewBuilder private var systemSection: some View {
-        Section {
-            if let s = system {
-                systemCard(s)
-                    .padding(.vertical, HelmSpace.xs)
-                    .helmRow()
-            } else {
-                systemSkeleton
-                    .helmRow()
-            }
-        } header: {
-            HelmSectionHeader(title: "System", trailing: system.map { "up \($0.uptimeText)" })
-        }
-    }
-
-    private func systemCard(_ s: BoxSystem) -> some View {
-        VStack(alignment: .leading, spacing: HelmSpace.md) {
+    private var hero: some View {
+        VStack(alignment: .leading, spacing: HelmSpace.lg) {
             HStack(spacing: HelmSpace.sm) {
-                PulseDot(color: error == nil ? HelmColor.lime : HelmColor.amber, size: 7, isActive: error == nil)
-                Text(s.hostname)
-                    .font(HelmFont.headline)
-                    .foregroundStyle(HelmColor.textPrimary)
+                PulseDot(color: heroColor, size: 8, isActive: error == nil)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(overview?.system.hostname ?? "box")
+                        .font(HelmFont.headline).foregroundStyle(HelmColor.textPrimary)
+                    Text(heroSubtitle)
+                        .font(HelmFont.mono(.caption2)).foregroundStyle(HelmColor.textTertiary)
+                }
                 Spacer()
-                Image(systemName: "server.rack")
-                    .font(.footnote)
-                    .foregroundStyle(HelmColor.textTertiary)
+                if let l = overview?.latest {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text("↓ \(Fmt.rate(l.rx))").foregroundStyle(HelmColor.lime)
+                        Text("↑ \(Fmt.rate(l.tx))").foregroundStyle(HelmColor.amber)
+                    }
+                    .font(HelmFont.mono(.caption2))
+                }
             }
-            if let load = s.loadavg.first, let cpus = s.cpus {
-                Meter(label: "Load", value: load, limit: Double(cpus),
-                      text: String(format: "%.1f / %d", load, cpus),
-                      tint: load > Double(cpus) ? HelmColor.amber : HelmColor.lime)
-            }
-            Meter(label: "Memory", value: Double(s.memUsedMB), limit: Double(max(s.memTotalMB, 1)),
-                  text: "\(s.memUsedMB) / \(s.memTotalMB) MB", tint: barTint(s.memUsedPct))
-            if s.swapTotalMB > 0 {
-                Meter(label: "Swap", value: Double(s.swapUsedMB), limit: Double(s.swapTotalMB),
-                      text: "\(s.swapUsedMB) / \(s.swapTotalMB) MB", tint: barTint(s.swapUsedPct))
-            }
-            Meter(label: "Disk /", value: s.diskTotalGB - s.diskFreeGB, limit: max(s.diskTotalGB, 1),
-                  text: String(format: "%.0f%% used, %.0f GB free", Double(s.diskUsedPct ?? 0), s.diskFreeGB),
-                  tint: barTint(s.diskUsedPct ?? 0))
-        }
-    }
 
-    private var systemSkeleton: some View {
-        VStack(alignment: .leading, spacing: HelmSpace.md) {
-            SkeletonBlock(width: 140, height: 14)
-            ForEach(0..<3, id: \.self) { _ in
-                VStack(alignment: .leading, spacing: 6) {
-                    SkeletonBlock(width: 90, height: 9)
-                    SkeletonBlock(height: 3, radius: 1.5)
+            if let o = overview {
+                HStack(spacing: 0) {
+                    RingGauge(label: "CPU", value: o.latest?.cpu ?? 0)
+                    RingGauge(label: "Mem", value: o.latest?.mem ?? Double(o.system.memUsedPct))
+                    RingGauge(label: "Load", value: loadPct(o), display: String(format: "%.1f", o.system.loadavg.first ?? 0),
+                              tint: levelTint(loadPct(o), warn: 100, crit: 200))
+                    RingGauge(label: "Disk", value: Double(o.system.diskUsedPct ?? 0))
+                }
+            } else {
+                HStack { ForEach(0..<4, id: \.self) { _ in SkeletonBlock(width: 58, height: 58, radius: 29).frame(maxWidth: .infinity) } }
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(MetricChart.Series.allCases) { s in
+                        Button { series = s; Haptics.tap() } label: {
+                            Text(s.rawValue)
+                                .font(HelmFont.mono(.caption2, weight: .semibold))
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .foregroundStyle(series == s ? HelmColor.onLime : HelmColor.textSecondary)
+                                .background(Capsule().fill(series == s ? HelmColor.lime : HelmColor.raisedHigh))
+                        }
+                        .buttonStyle(HelmPressStyle())
+                    }
+                    Divider().frame(height: 16).overlay(HelmColor.hairlineStrong)
+                    ForEach([15, 60], id: \.self) { m in
+                        Button { minutes = m; Haptics.tap() } label: {
+                            Text(m == 60 ? "1h" : "\(m)m")
+                                .font(HelmFont.mono(.caption2, weight: .semibold))
+                                .padding(.horizontal, 9).padding(.vertical, 5)
+                                .foregroundStyle(minutes == m ? HelmColor.textPrimary : HelmColor.textTertiary)
+                                .overlay(Capsule().strokeBorder(minutes == m ? HelmColor.hairlineStrong : .clear))
+                        }
+                        .buttonStyle(HelmPressStyle())
+                    }
+                }
+            }
+
+            Group {
+                if points.count >= 2 {
+                    MetricChart(points: points, series: series, cpus: overview?.system.cpus ?? 1)
+                } else {
+                    SkeletonBlock(height: 140, radius: 10)
+                }
+            }
+            .frame(height: 140)
+
+            if series == .net || series == .disk {
+                HStack(spacing: HelmSpace.lg) {
+                    legend(series == .net ? "in" : "read", HelmColor.lime)
+                    legend(series == .net ? "out" : "write", HelmColor.amber)
                 }
             }
         }
-        .padding(.vertical, HelmSpace.xs)
-        .accessibilityHidden(true)
+        .padding(HelmSpace.lg)
+        .helmCard()
     }
+
+    private func legend(_ t: String, _ c: Color) -> some View {
+        HStack(spacing: 5) {
+            Capsule().fill(c).frame(width: 12, height: 3)
+            Text(t).font(HelmFont.mono(.caption2)).foregroundStyle(HelmColor.textTertiary)
+        }
+    }
+
+    private var heroColor: Color {
+        guard error == nil, let o = overview else { return HelmColor.amber }
+        if o.critCount > 0 { return HelmColor.red }
+        return o.alerts.isEmpty ? HelmColor.lime : HelmColor.amber
+    }
+
+    private var heroSubtitle: String {
+        guard let o = overview else { return "connecting…" }
+        var s = "up \(o.system.uptimeText)"
+        if let c = o.system.cpus { s += " · \(c) CPUs" }
+        s += " · \(o.system.memTotalMB / 1024) GB RAM"
+        return s
+    }
+
+    private func loadPct(_ o: BoxOverview) -> Double {
+        guard let l = o.system.loadavg.first, let c = o.system.cpus, c > 0 else { return 0 }
+        return l / Double(c) * 100
+    }
+
+    // MARK: Alerts
+
+    @ViewBuilder private var alertsSection: some View {
+        if let o = overview {
+            VStack(alignment: .leading, spacing: HelmSpace.sm) {
+                HelmSectionHeader(title: "Attention", trailing: o.alerts.isEmpty ? "all clear" : "\(o.alerts.count)")
+                if o.alerts.isEmpty {
+                    HStack(spacing: HelmSpace.sm) {
+                        Image(systemName: "checkmark.seal.fill").foregroundStyle(HelmColor.lime)
+                        Text("Nothing needs you right now.").font(.footnote).foregroundStyle(HelmColor.textSecondary)
+                        Spacer()
+                    }
+                    .padding(HelmSpace.md)
+                    .helmCard()
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(o.alerts.enumerated()), id: \.element.id) { i, a in
+                            NavigationLink { alertDestination(a) } label: { alertRow(a) }
+                                .buttonStyle(HelmPressStyle())
+                            if i < o.alerts.count - 1 { Divider().overlay(HelmColor.hairline).padding(.leading, 40) }
+                        }
+                    }
+                    .helmCard(stroke: o.critCount > 0 ? HelmColor.red.opacity(0.3) : nil)
+                }
+            }
+        }
+    }
+
+    private func alertRow(_ a: BoxAlert) -> some View {
+        let tint = a.level == .crit ? HelmColor.red : HelmColor.amber
+        return HStack(spacing: HelmSpace.md) {
+            Image(systemName: alertIcon(a.kind))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(tint.opacity(0.12)))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(a.title).font(.system(.subheadline, weight: .medium)).foregroundStyle(HelmColor.textPrimary).lineLimit(1)
+                if !a.detail.isEmpty {
+                    Text(a.detail).font(HelmFont.mono(.caption2)).foregroundStyle(HelmColor.textTertiary).lineLimit(1)
+                }
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(HelmColor.textTertiary)
+        }
+        .padding(.horizontal, HelmSpace.md)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+
+    private func alertIcon(_ kind: String) -> String {
+        switch kind {
+        case "disk": return "internaldrive"
+        case "memory": return "memorychip"
+        case "swap": return "arrow.left.arrow.right"
+        case "load": return "speedometer"
+        case "unit": return "gearshape.2"
+        case "container": return "shippingbox"
+        default: return "exclamationmark.triangle"
+        }
+    }
+
+    @ViewBuilder private func alertDestination(_ a: BoxAlert) -> some View {
+        switch a.kind {
+        case "unit":
+            if let t = a.target {
+                LogView(title: t) { try await store.api.boxUnitLogs(t, lines: 300) }
+            } else { UnitsView(initialScope: .failed) }
+        case "container":
+            if let t = a.target {
+                LogView(title: t) { try await store.api.boxDockerLogs(t, lines: 300) }
+            } else { ContainersView() }
+        case "memory", "swap", "load":
+            ProcessesView()
+        default:
+            ActionsView()
+        }
+    }
+
+    // MARK: Tiles
+
+    private var tilesSection: some View {
+        VStack(alignment: .leading, spacing: HelmSpace.sm) {
+            HelmSectionHeader(title: "Control")
+            LazyVGrid(columns: grid, spacing: HelmSpace.md) {
+                let o = overview
+                tile(ContainersView()) {
+                    StatTile(title: "Containers", value: o.map { "\($0.containersRunning)/\($0.containersTotal)" } ?? "–",
+                             caption: o.map { $0.containersUnhealthy > 0 ? "\($0.containersUnhealthy) unhealthy" : "running" } ?? "",
+                             systemImage: "shippingbox", tint: HelmColor.lime,
+                             alert: (o?.alerts.contains { $0.kind == "container" }) ?? false)
+                }
+                tile(UnitsView(initialScope: (o?.unitsFailed ?? 0) > 0 ? .failed : .watched)) {
+                    StatTile(title: "Services", value: o.map { $0.unitsFailed > 0 ? "\($0.unitsFailed)" : "OK" } ?? "–",
+                             caption: o.map { $0.unitsFailed > 0 ? "failed units" : "no failures" } ?? "",
+                             systemImage: "gearshape.2", tint: HelmColor.lime, alert: (o?.unitsFailed ?? 0) > 0)
+                }
+                tile(ProcessesView()) {
+                    StatTile(title: "Processes", value: o.map { String(format: "%.0f%%", $0.latest?.cpu ?? 0) } ?? "–",
+                             caption: o.map { String(format: "load %.1f", $0.system.loadavg.first ?? 0) } ?? "",
+                             systemImage: "cpu", tint: HelmColor.textSecondary)
+                }
+                tile(NetworkView()) {
+                    StatTile(title: "Network", value: o.map { "\($0.peersOnline)/\($0.peers)" } ?? "–",
+                             caption: "WireGuard peers", systemImage: "network", tint: HelmColor.textSecondary)
+                }
+                tile(TmuxListView()) {
+                    StatTile(title: "tmux", value: o.map { "\($0.tmux)" } ?? "–",
+                             caption: o.map { "\($0.helmChats) Helm chats" } ?? "",
+                             systemImage: "rectangle.split.3x1", tint: HelmColor.textSecondary)
+                }
+                tile(CronView()) {
+                    StatTile(title: "Cron", value: "⏱", caption: "crontab", systemImage: "calendar.badge.clock",
+                             tint: HelmColor.textSecondary)
+                }
+            }
+        }
+    }
+
+    private func tile<D: View, L: View>(_ dest: D, @ViewBuilder label: () -> L) -> some View {
+        NavigationLink { dest } label: { label() }
+            .buttonStyle(HelmPressStyle())
+    }
+
+    // MARK: Quick actions
+
+    private var actionsSection: some View {
+        VStack(alignment: .leading, spacing: HelmSpace.sm) {
+            HStack {
+                HelmSectionHeader(title: "Quick actions")
+                Spacer()
+                NavigationLink { ActionsView() } label: {
+                    Text("Edit").font(HelmFont.mono(.caption2, weight: .semibold)).foregroundStyle(HelmColor.lime)
+                }
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: HelmSpace.sm) {
+                    if actions.isEmpty {
+                        ForEach(0..<4, id: \.self) { _ in SkeletonBlock(width: 110, height: 36, radius: 18) }
+                    }
+                    ForEach(actions) { a in
+                        Button { runner.trigger(a, api: store.api) } label: {
+                            HStack(spacing: 6) {
+                                if runner.running?.id == a.id {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Image(systemName: a.icon).font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(a.confirm ? HelmColor.amber : HelmColor.lime)
+                                }
+                                Text(a.title).font(.system(.footnote, weight: .semibold))
+                                    .foregroundStyle(HelmColor.textPrimary)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 9)
+                            .background(Capsule().fill(HelmColor.raised))
+                            .overlay(Capsule().strokeBorder(HelmColor.hairlineStrong))
+                        }
+                        .buttonStyle(HelmPressStyle())
+                        .disabled(runner.running != nil)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    // MARK: Disks
+
+    @ViewBuilder private var disksSection: some View {
+        if let disks = overview?.disks, !disks.isEmpty {
+            VStack(alignment: .leading, spacing: HelmSpace.sm) {
+                HelmSectionHeader(title: "Storage", trailing: "\(disks.count) mounts")
+                VStack(alignment: .leading, spacing: HelmSpace.md) {
+                    ForEach(disks) { d in
+                        if d.ok {
+                            Meter(label: d.mount, value: d.usedGB, limit: max(d.totalGB, 0.001),
+                                  text: String(format: "%d%% · %@ free", d.usedPct, gb(d.freeGB)),
+                                  tint: levelTint(Double(d.usedPct)))
+                        } else {
+                            HStack(spacing: HelmSpace.sm) {
+                                PulseDot(color: HelmColor.red, size: 6)
+                                Text(d.mount).font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(HelmColor.textPrimary)
+                                Spacer()
+                                Text(d.error ?? "not responding").font(HelmFont.mono(.caption2)).foregroundStyle(HelmColor.red)
+                            }
+                        }
+                    }
+                }
+                .padding(HelmSpace.lg)
+                .helmCard()
+            }
+        }
+    }
+
+    private func gb(_ v: Double) -> String { v >= 1000 ? String(format: "%.1f TB", v / 1000) : String(format: "%.0f GB", v) }
 
     // MARK: GPU burst
 
     @ViewBuilder private var burstSection: some View {
         if !burst.isEmpty {
-            Section {
-                ForEach(burst) { m in
-                    burstRow(m).helmRow()
-                }
-            } header: {
+            VStack(alignment: .leading, spacing: HelmSpace.sm) {
                 HelmSectionHeader(title: "GPU burst")
+                VStack(spacing: HelmSpace.md) {
+                    ForEach(burst) { m in burstRow(m) }
+                }
+                .padding(HelmSpace.lg)
+                .helmCard()
             }
         }
     }
@@ -112,9 +376,7 @@ struct BoxView: View {
         HStack(spacing: HelmSpace.md) {
             HarnessBadge(harness: m.model, size: 30)
             VStack(alignment: .leading, spacing: 2) {
-                Text(m.model.uppercased())
-                    .font(HelmFont.rowTitle)
-                    .foregroundStyle(HelmColor.textPrimary)
+                Text(m.model.uppercased()).font(HelmFont.rowTitle).foregroundStyle(HelmColor.textPrimary)
                 HStack(spacing: 5) {
                     if m.held { PulseDot(color: HelmColor.lime, size: 6) }
                     Text(m.held ? "container pinned" : "scaled to zero")
@@ -135,101 +397,93 @@ struct BoxView: View {
         }
     }
 
-    // MARK: Services
+    // MARK: Tools
 
-    @ViewBuilder private var servicesSection: some View {
-        Section {
-            ForEach(services.prefix(5)) { svc in
-                HStack(spacing: HelmSpace.sm) {
-                    PulseDot(color: svc.isActive ? HelmColor.lime : HelmColor.textTertiary,
-                             size: 7, isActive: false)
-                    Text(svc.name)
-                        .font(HelmFont.mono(.subheadline))
-                        .foregroundStyle(HelmColor.textPrimary)
-                    Spacer()
-                    Text(svc.active)
-                        .font(HelmFont.mono(.caption2))
-                        .foregroundStyle(svc.isActive ? HelmColor.textSecondary : HelmColor.textTertiary)
+    private var toolsSection: some View {
+        VStack(alignment: .leading, spacing: HelmSpace.sm) {
+            HelmSectionHeader(title: "Tools")
+            VStack(spacing: 0) {
+                toolRow("Shell console", "terminal") { ShellConsoleView() }
+                toolRow("Files", "folder") { FileBrowserView(path: "/root") }
+                toolRow("Claude history", "clock.arrow.circlepath") { ClaudeHistoryView() }
+                toolRow("Journal errors (1h)", "exclamationmark.bubble") {
+                    LogView(title: "Journal errors") { try await store.api.boxJournalErrors(minutes: 60) }
                 }
-                .helmRow()
+                toolRow("All services", "gearshape.2") { UnitsView(initialScope: .all) }
+                toolRow("Quick actions", "bolt", last: true) { ActionsView() }
             }
-            NavigationLink { ServicesView() } label: {
-                navLabel("Manage services", systemImage: "gearshape.2")
-            }
-            .helmRow()
-        } header: {
-            HelmSectionHeader(title: "Services", trailing: servicesTrailing)
+            .helmCard()
         }
     }
 
-    private var servicesTrailing: String? {
-        guard !services.isEmpty else { return nil }
-        let up = services.filter(\.isActive).count
-        return "\(up)/\(services.count) up"
-    }
-
-    // MARK: Activity
-
-    @ViewBuilder private var activitySection: some View {
-        Section {
-            NavigationLink { TmuxListView() } label: {
-                navLabel("tmux sessions", systemImage: "rectangle.split.3x1")
+    private func toolRow<D: View>(_ title: String, _ icon: String, last: Bool = false,
+                                  @ViewBuilder dest: @escaping () -> D) -> some View {
+        VStack(spacing: 0) {
+            NavigationLink { dest() } label: {
+                HStack(spacing: HelmSpace.md) {
+                    Image(systemName: icon).font(.system(size: 14)).foregroundStyle(HelmColor.textSecondary).frame(width: 22)
+                    Text(title).font(.subheadline).foregroundStyle(HelmColor.textPrimary)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(HelmColor.textTertiary)
+                }
+                .padding(.horizontal, HelmSpace.lg)
+                .padding(.vertical, 13)
+                .contentShape(Rectangle())
             }
-            .helmRow()
-            NavigationLink { ClaudeHistoryView() } label: {
-                navLabel("Claude history", systemImage: "clock.arrow.circlepath")
-            }
-            .helmRow()
-            NavigationLink { ShellConsoleView() } label: {
-                navLabel("Shell console", systemImage: "terminal")
-            }
-            .helmRow()
-            NavigationLink { FileBrowserView(path: "/root") } label: {
-                navLabel("Files", systemImage: "folder")
-            }
-            .helmRow()
-        } header: {
-            HelmSectionHeader(title: "Activity")
+            .buttonStyle(HelmPressStyle())
+            if !last { Divider().overlay(HelmColor.hairline).padding(.leading, 50) }
         }
     }
 
-    private func navLabel(_ title: String, systemImage: String) -> some View {
-        Label {
-            Text(title).foregroundStyle(HelmColor.textPrimary)
-        } icon: {
-            Image(systemName: systemImage).foregroundStyle(HelmColor.textSecondary)
+    private func errorBanner(_ msg: String) -> some View {
+        HStack(spacing: HelmSpace.sm) {
+            Image(systemName: "wifi.exclamationmark")
+            Text(msg).lineLimit(2)
+            Spacer()
         }
-    }
-
-    private func errorRow(_ msg: String) -> some View {
-        Label(msg, systemImage: "wifi.exclamationmark")
-            .font(.footnote)
-            .foregroundStyle(HelmColor.amber)
-            .helmRow()
-    }
-
-    private func barTint(_ pct: Int) -> Color {
-        if pct >= 90 { return HelmColor.red }
-        if pct >= 75 { return HelmColor.amber }
-        return HelmColor.lime
+        .font(.footnote)
+        .foregroundStyle(HelmColor.amber)
+        .padding(HelmSpace.md)
+        .helmCard(stroke: HelmColor.amber.opacity(0.3))
     }
 
     // MARK: Loading
 
-    private func loadAll() async {
+    private func refreshAll() async {
+        async let a: Void = loadOverview()
+        async let b: Void = loadMetrics()
+        async let c: Void = loadBurst()
+        async let d: Void = loadActions()
+        _ = await (a, b, c, d)
+    }
+
+    private func loadOverview() async {
         guard store.config.isConfigured else { return }
         do {
-            async let sys = store.api.boxSystem()
-            async let br = store.api.boxBurst()
-            async let svc = store.api.boxServices()
-            system = try await sys
-            burst = try await br
-            services = try await svc
+            let o = try await store.api.boxOverview()
+            withAnimation(HelmMotion.gentle) { overview = o }
             error = nil
         } catch is CancellationError {
         } catch {
             self.error = APIClient.describe(error)
         }
+    }
+
+    private func loadMetrics() async {
+        guard store.config.isConfigured else { return }
+        if let p = try? await store.api.boxMetrics(minutes: minutes, points: minutes == 15 ? 180 : 240) {
+            points = p
+        }
+    }
+
+    private func loadBurst() async {
+        guard store.config.isConfigured else { return }
+        if let b = try? await store.api.boxBurst() { burst = b }
+    }
+
+    private func loadActions() async {
+        guard store.config.isConfigured else { return }
+        if let a = try? await store.api.boxActions() { actions = a }
     }
 
     private func burstAction(_ model: String, _ action: String) async {
@@ -238,7 +492,7 @@ struct BoxView: View {
         Haptics.tap()
         _ = try? await store.api.boxBurstAction(model, action: action)
         try? await Task.sleep(nanoseconds: 1_500_000_000)
-        burst = (try? await store.api.boxBurst()) ?? burst
+        await loadBurst()
     }
 }
 
@@ -263,6 +517,7 @@ struct Meter: View {
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .tracking(0.8)
                     .foregroundStyle(HelmColor.textTertiary)
+                    .lineLimit(1)
                 Spacer()
                 Text(text)
                     .font(HelmFont.mono(.caption))
