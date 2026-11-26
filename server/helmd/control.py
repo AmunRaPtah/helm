@@ -237,7 +237,7 @@ _dk_busy = {"ps": False, "stats": False}
 
 
 def _docker_ps():
-    rc, out, err = _run(["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"], timeout=45)
+    rc, out, err = _run(["docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}"], timeout=120)
     if rc != 0:
         with _dk_lock:
             _dk["error"] = (err or "docker ps failed").strip()[:300]
